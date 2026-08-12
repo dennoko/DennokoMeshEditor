@@ -15,10 +15,13 @@ VRChat アバター改変向けの、非破壊メッシュ編集ツールです�
 
 ### 1. コンポーネントを付ける
 
-編集したいメッシュ（SkinnedMeshRenderer / MeshRenderer）を持つオブジェクトに
-`dennokoworks > Den Mesh Editor` を追加します。
+ヒエラルキー上で編集したいメッシュ（SkinnedMeshRenderer / MeshRenderer）を持つオブジェクトを右クリックし、
+`dennokoworks > Den Mesh Editor` を選択します（または Inspector の `Add Component` から追加します）。
 
-Renderer を持つオブジェクトに付けた場合、そのメッシュが自動的に編集対象の 1 つ目に登録されます。
+- **Renderer を持つオブジェクトに右クリックから追加した場合：**
+  そのメッシュが自動的に編集対象として登録され、**即座に編集モードが有効化**されます。
+- **Renderer のないオブジェクトに追加した場合：**
+  コンポーネントのみが追加されます。Inspector の「対象を追加」から編集したい Renderer を指定してください。
 
 複数のメッシュをまとめて編集したい場合は、Inspector の「対象を追加」から Renderer を追加してください。
 服と素体を同時に登録しておくと、境界をまたいで一緒に馴染ませられます。

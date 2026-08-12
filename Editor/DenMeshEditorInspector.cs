@@ -13,6 +13,47 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private SerializedProperty _mirrorAxis;
         private SerializedProperty _bakeAsBlendShape;
 
+        [MenuItem("GameObject/dennokoworks/Den Mesh Editor", false, 20)]
+        private static void AddDenMeshEditorMenuItem(MenuCommand menuCommand)
+        {
+            var target = menuCommand.context as GameObject;
+            if (target == null)
+            {
+                target = Selection.activeGameObject;
+            }
+
+            if (target == null)
+            {
+                target = new GameObject("DenMeshEditor");
+                Undo.RegisterCreatedObjectUndo(target, "Create DenMeshEditor");
+                GameObjectUtility.SetParentAndAlign(target, menuCommand.context as GameObject);
+            }
+
+            var component = target.GetComponent<DenMeshEditor>();
+            if (component == null)
+            {
+                component = Undo.AddComponent<DenMeshEditor>(target);
+            }
+
+            Selection.activeGameObject = target;
+
+            var renderer = target.GetComponent<Renderer>();
+            if (renderer is SkinnedMeshRenderer || renderer is MeshRenderer)
+            {
+                if (component.edits.Count == 0)
+                {
+                    Undo.RecordObject(component, "Add Target to DenMeshEditor");
+                    component.edits.Add(new MeshEdit { target = renderer });
+                    EditorUtility.SetDirty(component);
+                }
+
+                if (MeshDeltaApplier.GetSharedMesh(renderer) != null)
+                {
+                    EditSession.Begin(component);
+                }
+            }
+        }
+
         private void OnEnable()
         {
             _edits = serializedObject.FindProperty("edits");
