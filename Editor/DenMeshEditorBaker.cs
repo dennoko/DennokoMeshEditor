@@ -69,8 +69,18 @@ namespace Dennokoworks.DenMeshEditor.Editor
                     Debug.Log($"[Den Mesh Editor] ベイクしました: {AssetDatabase.GetAssetPath(asset)}", asset);
                 }
 
-                EditorGUIUtility.PingObject(created[0]);
-                Selection.objects = created.ToArray();
+                // Bake は OnInspectorGUI の実行中に呼ばれる。その場で Selection を変えると
+                // Inspector の serializedObject が破棄されて GUI 例外になるうえ、
+                // 選択変更を検知している編集セッションが黙って終了してしまう。
+                // 次のエディタ更新まで遅らせ、編集中は選択自体を変えない。
+                var assets = created.ToArray();
+                EditorApplication.delayCall += () =>
+                {
+                    if (assets.Length == 0 || assets[0] == null) return;
+
+                    EditorGUIUtility.PingObject(assets[0]);
+                    if (EditSession.Active == null) Selection.objects = assets;
+                };
             }
 
             foreach (var message in skipped)

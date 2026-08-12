@@ -43,9 +43,23 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
                 foreach (var edit in component.edits)
                 {
-                    if (edit?.target == null || !processed.Add(edit.target)) continue;
+                    if (edit?.target == null) continue;
 
-                    ApplyToRenderer(edit.target, componentList);
+                    // アバター配下でない Renderer はビルド用クローンに含まれず、参照が
+                    // シーン上の実オブジェクトを指したままになる。そこへ書き込むと
+                    // 「元アセットを書き換えない」という非破壊の前提が壊れるので必ず弾く。
+                    if (!edit.target.transform.IsChildOf(context.AvatarRootTransform))
+                    {
+                        Debug.LogWarning(
+                            $"[Den Mesh Editor] {edit.target.name} はアバター配下にないため適用をスキップしました。"
+                            + "編集対象はアバタールートの子孫にある Renderer を指定してください。",
+                            component);
+                        continue;
+                    }
+
+                    if (!processed.Add(edit.target)) continue;
+
+                    ApplyToRenderer(context, edit.target, componentList);
                 }
             }
 
@@ -56,26 +70,32 @@ namespace Dennokoworks.DenMeshEditor.Editor
             }
         }
 
-        private static void ApplyToRenderer(Renderer target, List<DenMeshEditor> components)
+        private static void ApplyToRenderer(BuildContext context, Renderer target, List<DenMeshEditor> components)
         {
             var sourceMesh = MeshDeltaApplier.GetSharedMesh(target);
             if (sourceMesh == null) return;
 
-            var merged = DenMeshEditorPreviewFilter.GatherEdits(components, target, sourceMesh.vertexCount);
-            if (merged == null) return;
+            // 頂点数の不一致などで捨てられた編集は、ここで必ずユーザーへ伝える。
+            // 黙ってスキップするとアップロード後まで気づけない。
+            var skipped = new List<string>();
+            var merged = DenMeshEditorPreviewFilter.GatherEdits(
+                components, target, sourceMesh.vertexCount, skipped);
 
-            if (!MeshDeltaApplier.IsCompatible(sourceMesh, merged))
+            foreach (var message in skipped)
             {
-                Debug.LogWarning(
-                    $"[Den Mesh Editor] {target.name} のメッシュ頂点数が編集時と異なるため"
-                    + $"（現在 {sourceMesh.vertexCount} / 編集時 {merged.vertexCount}）、編集を適用できませんでした。"
-                    + "元メッシュが差し替わったか、再インポートで頂点順が変化した可能性があります。",
-                    target);
-                return;
+                Debug.LogWarning($"[Den Mesh Editor] {target.name}: {message}", target);
             }
+
+            if (merged == null) return;
 
             var edited = MeshDeltaApplier.CreateEdited(sourceMesh, merged);
             if (edited == null) return;
+
+            // 下流ツールのエラー報告が元メッシュに紐づくようにする
+            ObjectRegistry.RegisterReplacedObject(sourceMesh, edited);
+
+            // BuildContext.Serialize() でも回収されるが、明示的に保存しておく方が確実
+            context.AssetSaver.SaveAsset(edited);
 
             MeshDeltaApplier.SetSharedMesh(target, edited);
         }

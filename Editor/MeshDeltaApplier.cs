@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using UnityEditor;
 using UnityEngine;
 
 namespace Dennokoworks.DenMeshEditor.Editor
@@ -68,11 +69,30 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// </summary>
         internal static void ApplyInPlace(Vector3[] vertices, MeshEdit edit)
         {
+            if (vertices == null || edit == null) return;
+
             var count = Mathf.Min(edit.indices.Count, edit.deltas.Count);
             for (var i = 0; i < count; i++)
             {
                 var index = edit.indices[i];
                 if (index < 0 || index >= vertices.Length) continue;
+                vertices[index] += edit.deltas[i];
+            }
+        }
+
+        /// <summary>
+        /// <see cref="ApplyInPlace(Vector3[], MeshEdit)"/> の List 版。
+        /// プレビューでは確保を避けるため配列ではなく使い回しの List を扱う。
+        /// </summary>
+        internal static void ApplyInPlace(List<Vector3> vertices, MeshEdit edit)
+        {
+            if (vertices == null || edit == null) return;
+
+            var count = Mathf.Min(edit.indices.Count, edit.deltas.Count);
+            for (var i = 0; i < count; i++)
+            {
+                var index = edit.indices[i];
+                if (index < 0 || index >= vertices.Count) continue;
                 vertices[index] += edit.deltas[i];
             }
         }
@@ -100,19 +120,19 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
         /// <summary>
         /// 生成済みメッシュの頂点を「基準頂点 + デルタ」で書き換える。
-        /// ドラッグ中に毎フレーム呼ばれるため、作業配列は呼び出し側で使い回す。
+        /// ドラッグ中に毎フレーム呼ばれるため、作業用 List は呼び出し側で使い回す
+        /// （Clear + AddRange は内部で Array.Copy になり、容量が足りていれば確保は発生しない）。
         /// </summary>
-        internal static void UpdateVertices(Mesh mesh, Vector3[] baseVertices, MeshEdit edit, ref Vector3[] scratch)
+        internal static void UpdateVertices(Mesh mesh, List<Vector3> baseVertices, MeshEdit edit,
+            List<Vector3> scratch)
         {
-            if (mesh == null || baseVertices == null) return;
+            if (mesh == null || baseVertices == null || scratch == null) return;
 
-            if (scratch == null || scratch.Length != baseVertices.Length)
-            {
-                scratch = new Vector3[baseVertices.Length];
-            }
+            scratch.Clear();
+            if (scratch.Capacity < baseVertices.Count) scratch.Capacity = baseVertices.Count;
+            scratch.AddRange(baseVertices);
 
-            System.Array.Copy(baseVertices, scratch, baseVertices.Length);
-            if (edit != null) ApplyInPlace(scratch, edit);
+            ApplyInPlace(scratch, edit);
 
             mesh.SetVertices(scratch);
 
@@ -144,19 +164,43 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             return mesh;
         }
+    }
 
-        /// <summary>
-        /// 編集データを持つ Renderer と、その編集データの組を列挙する。
-        /// </summary>
-        internal static IEnumerable<MeshEdit> EnumerateActiveEdits(DenMeshEditor component)
+    /// <summary>
+    /// プレビュー用に生成した一時メッシュ（<see cref="HideFlags.HideAndDontSave"/>）の追跡。
+    ///
+    /// ドメインリロードでは <c>IRenderFilterNode.Dispose</c> が呼ばれず、
+    /// DontSave なオブジェクトはリロードを生き延びるため、参照を失ったメッシュが
+    /// エディタ再起動まで回収されない。リロード直前に明示的に破棄する。
+    /// </summary>
+    [InitializeOnLoad]
+    internal static class GeneratedMeshTracker
+    {
+        private static readonly List<Mesh> Tracked = new List<Mesh>();
+
+        static GeneratedMeshTracker()
         {
-            if (component == null) yield break;
+            AssemblyReloadEvents.beforeAssemblyReload += DestroyAll;
+        }
 
-            foreach (var edit in component.edits)
+        internal static void Track(Mesh mesh)
+        {
+            if (mesh != null) Tracked.Add(mesh);
+        }
+
+        internal static void Forget(Mesh mesh)
+        {
+            if (mesh != null) Tracked.Remove(mesh);
+        }
+
+        private static void DestroyAll()
+        {
+            foreach (var mesh in Tracked)
             {
-                if (edit == null || edit.target == null || !edit.HasEdits) continue;
-                yield return edit;
+                if (mesh != null) Object.DestroyImmediate(mesh);
             }
+
+            Tracked.Clear();
         }
     }
 }

@@ -23,6 +23,15 @@ namespace Dennokoworks.DenMeshEditor.Editor
             _bakeAsBlendShape = serializedObject.FindProperty("bakeAsBlendShape");
         }
 
+        /// <summary>
+        /// 編集セッション中は、シーンビュー側の操作（半径のホイール変更など）が
+        /// コンポーネントへ反映されるので Inspector も追従させる。
+        /// </summary>
+        public override bool RequiresConstantRepaint()
+        {
+            return target is DenMeshEditor component && EditSession.IsActive(component);
+        }
+
         public override void OnInspectorGUI()
         {
             var component = (DenMeshEditor)target;
@@ -140,12 +149,21 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 }
             }
 
-            if (editing)
+            if (!editing) return;
+
+            EditorGUILayout.HelpBox(
+                "シーンビューで頂点をクリックして選択し、移動ハンドルでドラッグします。\n"
+                + "Esc で選択解除、もう一度 Esc で編集終了。",
+                MessageType.Info);
+
+            var session = EditSession.Active;
+            if (session != null && session.ShowFallbackWarning)
             {
                 EditorGUILayout.HelpBox(
-                    "シーンビューで頂点をクリックして選択し、移動ハンドルでドラッグします。\n"
-                    + "Esc で選択解除、もう一度 Esc で編集終了。",
-                    MessageType.Info);
+                    "NDMF プレビューのプロキシを取得できていません。"
+                    + "Scale Adjuster など他ツールの影響が反映されていない状態で編集しています。\n"
+                    + "NDMF のプレビューが有効になっているか確認してください。",
+                    MessageType.Warning);
             }
         }
 
@@ -210,6 +228,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
                     if (EditorUtility.DisplayDialog("Den Mesh Editor",
                             "すべての編集内容を破棄します。よろしいですか？", "クリア", "キャンセル"))
                     {
+                        EditSession.End();
+
                         Undo.RecordObject(component, "Clear Den Mesh Editor Edits");
                         foreach (var edit in component.edits)
                         {
@@ -217,8 +237,16 @@ namespace Dennokoworks.DenMeshEditor.Editor
                         }
 
                         EditorUtility.SetDirty(component);
+                        if (PrefabUtility.IsPartOfPrefabInstance(component))
+                        {
+                            PrefabUtility.RecordPrefabInstancePropertyModifications(component);
+                        }
+
                         LiveEdits.Invalidate();
-                        EditSession.End();
+
+                        // SerializedObject を経由せずに書き換えたので、
+                        // 末尾の ApplyModifiedProperties が古い値を書き戻さないよう読み直す
+                        serializedObject.Update();
                     }
                 }
             }

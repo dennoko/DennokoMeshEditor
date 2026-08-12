@@ -64,5 +64,30 @@ namespace Dennokoworks.DenMeshEditor.Editor
             isProxy = TryGet(original, out var proxy);
             return isProxy ? proxy : original;
         }
+
+        /// <summary>
+        /// 破棄済みの Renderer を参照しているエントリを取り除く。
+        /// <see cref="TryGet"/> は値側しか掃除しないため、キー側が破棄された分が溜まっていく。
+        /// 編集セッションの終了時など、区切りの良いところで呼ぶ。
+        /// </summary>
+        internal static void Prune()
+        {
+            List<Renderer> stale = null;
+
+            foreach (var pair in Map)
+            {
+                if (pair.Key != null && pair.Value != null) continue;
+
+                stale ??= new List<Renderer>();
+                stale.Add(pair.Key);
+            }
+
+            if (stale == null) return;
+
+            foreach (var key in stale)
+            {
+                Map.Remove(key);
+            }
+        }
     }
 }

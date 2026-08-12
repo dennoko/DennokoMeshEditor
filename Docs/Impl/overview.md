@@ -566,6 +566,10 @@ Editor/
 | ピッキングの遮蔽判定 | レイ × 三角形（両面）。裏面カリングは使わない。候補は近い順に最大 8 件。遮蔽物は編集対象の Renderer のみ（→ 6.2） |
 | フィルタ順序 | `.AfterPlugin("nadena.dev.modular-avatar")` のみ。AAO はフェーズが後（Optimizing）なので指定不要。`AfterPlugin` は `WeakOrder` 制約かつ名前ベースの placeholder を使うため、MA 未導入でもエラーにならない |
 | 頂点順序変更の検知 | `vertexCount` 照合のみ。記録するのは**プロキシの頂点数**とする（元メッシュの頂点数を記録すると、上流で頂点数が変わった場合にチェックを素通りして誤った頂点が動く） |
+| ドラッグ終了の検知 | `GUIUtility.hotControl == 0` または `Event.rawType == MouseUp`。`Handles.PositionHandle` が MouseUp を `Use()` するため `Event.type` では検出できない（→ 修正履歴） |
+| プレビュー対象の絞り込み | 編集セッション中はデルタが空の Renderer も対象に含め、それ以外は編集を持つ Renderer だけに絞る。セッションの開始・終了は `PublishedValue<DenMeshEditor>` で NDMF へ通知する |
+| コンポーネント監視 | `context.Observe(component, extract, compare)` で**編集データのハッシュだけ**を監視する。引数なしの `Observe(component)` は比較関数が常に false のため、`brushRadius` を触っただけでパイプライン全体が再構築される |
+| 上流メッシュの変化検出 | 毎フレーム `Mesh.GetVertices(List)` で読み直し、64 点のサンプルを比較する。上流がメッシュを in-place で書き換えるとインスタンス比較では検出できないため |
 
 ### 設計からの差分
 
@@ -584,11 +588,56 @@ Editor/
 
 `ClearSelection` が `_dragging` を降ろしていなかったため、ドラッグ中に Esc で選択解除すると `_dragging` が立ちっぱなしになり、`Refresh` が二度と走らなくなっていた（頂点位置が更新されず、以降のピッキングも古い座標で行われる）。`ClearSelection` で降ろすよう修正。
 
+---
+
+#### レビュー指摘による修正（第 2 版）
+
+**［致命的］ドラッグ結果がコンポーネントへ書き込まれない**
+
+`HandleDrag` が `Event.current.type == EventType.MouseUp` で確定処理を起動していたが、`Handles.PositionHandle` は hotControl を持った状態で MouseUp を受けると `evt.Use()` を呼ぶ。`Event.current` は同一インスタンスなので、ハンドルから戻った時点で `type` は `EventType.Used` になっており、この条件は**永久に成立しない**。
+
+結果として `Commit` が呼ばれず、`_dragging` が立ちっぱなしで `Refresh` も止まり、編集終了時に `Cleanup` の `LiveEdits.Clear()` で編集内容が消えていた（プレビューには出るのに保存されない）。`GUIUtility.hotControl == 0` と `Event.rawType == MouseUp` の両方で検出するよう修正。
+
+**［高］エディタのライフサイクルが未処理**
+
+ドメインリロード・プレイモード遷移・シーン切り替えでセッションが閉じられていなかった。`BakeScratch`（`HideAndDontSave` な Mesh）がエディタ再起動まで残り、`Tools.hidden` も戻らず、Enter Play Mode Options でドメインリロードを無効にしている環境ではプレイモード中もセッションが動き続けていた。`[InitializeOnLoadMethod]` で `AssemblyReloadEvents.beforeAssemblyReload` / `playModeStateChanged` / `sceneClosing` を購読して `End()` する。プレビュー用の生成メッシュも `GeneratedMeshTracker` でリロード時に破棄する。
+
+**［高］Undo / Redo でセッション状態が同期しない**
+
+`Undo.undoRedoPerformed` を購読していなかったため、巻き戻ったコンポーネントに対して古い `Working` / `Snapshot` が残り、次のドラッグで「取り消したはずの編集」を書き戻す可能性があった。`ResyncFromComponent` で作業状態を作り直す。
+
+**［高］頂点数不一致がサイレント失敗していた**
+
+`GatherEdits` が不一致の編集を捨てたうえで `SetFrom` で `vertexCount` を書き直して返すため、後続の `IsCompatible` チェックは常に成功し、警告が到達不能なデッドコードになっていた。`GatherEdits` にスキップ理由を返させ、ビルド時に必ず警告を出す。
+
+**［中］プレビューパイプラインの過剰な再構築**
+
+`context.Observe(component)` は比較関数が常に false（NDMF `SingleObjectQueries.cs`）なので、`brushRadius` のスライダーをドラッグすると毎フレーム全メッシュを複製し直していた。編集データのハッシュだけを監視するよう変更。併せてオーバーレイの設定変更は `Undo.CollapseUndoOperations` で 1 ドラッグ 1 段にまとめる。
+
+**［中］その他**
+
+- `SkinMatrix` がプロキシ破棄時に `MissingReferenceException`（`BuildInfluences` はホイール操作から `Refresh` を経由せずに呼ばれる）
+- `DrawOverlay` の GUILayout 構成が Layout / Repaint 間で変化しうる（`AnyFallback` を Layout 時に固定）
+- ベイクが `OnInspectorGUI` 中に `Selection` を変更し、編集セッションを終了させていた（`delayCall` へ退避）
+- アバタールート配下でない Renderer をビルド時に書き換えうる（クローンに含まれないため実データが壊れる）→ `IsChildOf` で検証
+- `Layout` イベント内の `Repaint()` による無限再描画 → `EditorApplication.update` から 10fps で要求
+- 頂点スクリーン座標を視点・形状が変わらない限り再計算しない（マウス移動のたびの O(V) を削減）
+- ビルド成果物に `ObjectRegistry.RegisterReplacedObject` / `AssetSaver.SaveAsset` を追加
+- Read/Write 無効メッシュの検出と警告
+- `Tools.hidden` を開始前の値へ戻す、`Handles.PositionHandle` を `Tools.handleRotation` に追従させる
+- `ProxyRegistry.Prune()` で破棄済みエントリを掃除
+
 ### 未検証項目（Unity 上で確認が必要）
 
 1. Scale Adjuster 適用下で、シーンビューの頂点位置がスケール調整に追従すること
 2. スキニング行列の逆変換により、ドラッグ量とメッシュの動きが一致すること（ボーンにスケールがかかった部位で特に）
 3. ドラッグ中のフレームレート（`Mesh.SetVertices` によるフルアップロードが毎フレーム走る）
+4. ドラッグ確定が 1 回のマウスリリースで行われること（上記の致命バグの回帰確認）
+5. 編集開始時にプロキシが生成され、`ShowFallbackWarning` が誤って出ないこと
+
+### 未対応
+
+- `package.json`（VPM パッケージ化）は未作成。現状は `Assets/` 配下のツールなので、NDMF の下限バージョン宣言はパッケージ化のタイミングで行う
 
 1 が想定通りに動かない場合は、記事のリフレクション手法（`PreviewSession.OriginalToProxyRenderer`）が**実測で動作確認済みの代替手段**として使える。その場合は `ProxyRegistry` の内部実装のみを差し替えればよく、シーンビュー側のコードは変更不要 — レジストリを挟む構成にしておいた理由の一つ。
 

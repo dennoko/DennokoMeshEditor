@@ -15,12 +15,6 @@
     "precompiledReferences": [],
     "autoReferenced": false,
     "defineConstraints": [],
-    "versionDefines": [
-        {
-            "name": "nadena.dev.ndmf",
-            "expression": "",
-            "define": "DEN_MESH_EDITOR_NDMF"
-        }
-    ],
+    "versionDefines": [],
     "noEngineReferences": false
 }

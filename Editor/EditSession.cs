@@ -1,5 +1,7 @@
 using System.Collections.Generic;
+using nadena.dev.ndmf.preview;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
 
 namespace Dennokoworks.DenMeshEditor.Editor
@@ -31,13 +33,60 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// 半径が小さいときは細かく、大きいときは粗く変化させる。</summary>
         private const float RadiusScrollStep = 1.05f;
 
+        /// <summary>
+        /// プロキシ未取得の警告を出すまでの猶予。パイプライン再構築の数フレームで
+        /// 警告が明滅しないようにする。
+        /// </summary>
+        private const double FallbackWarningDelaySeconds = 1.0;
+
         private static EditSession _active;
+        private static bool _toolsHiddenBefore;
+
+        /// <summary>
+        /// 編集中のコンポーネント。NDMF プレビューフィルタがこの値を監視し、
+        /// 編集セッションの開始・終了でプロキシの生成対象を切り替える。
+        /// </summary>
+        internal static readonly PublishedValue<DenMeshEditor> ActiveComponent =
+            new PublishedValue<DenMeshEditor>(null, "DenMeshEditor.ActiveComponent");
 
         internal static EditSession Active => _active;
 
         internal static bool IsActive(DenMeshEditor component)
         {
             return _active != null && _active._component == component;
+        }
+
+        /// <summary>
+        /// エディタのライフサイクルに合わせてセッションを確実に閉じる。
+        ///
+        /// これが無いと、ドメインリロード時に <see cref="Cleanup"/> が走らず
+        /// BakeScratch（HideAndDontSave な Mesh）がエディタ再起動まで残り、
+        /// Tools.hidden も戻らない。さらに Enter Play Mode Options でドメインリロードを
+        /// 無効にしている環境では static が生き残るため、プレイモード中もセッションが
+        /// 動き続けてコンポーネントを書き換えてしまう。
+        /// </summary>
+        [InitializeOnLoadMethod]
+        private static void InstallLifecycleHooks()
+        {
+            AssemblyReloadEvents.beforeAssemblyReload += End;
+            EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
+            EditorSceneManager.sceneClosing += OnSceneClosing;
+            Undo.undoRedoPerformed += OnUndoRedoPerformed;
+        }
+
+        private static void OnPlayModeStateChanged(PlayModeStateChange change)
+        {
+            End();
+        }
+
+        private static void OnSceneClosing(UnityEngine.SceneManagement.Scene scene, bool removingScene)
+        {
+            End();
+        }
+
+        private static void OnUndoRedoPerformed()
+        {
+            _active?.ResyncFromComponent();
         }
 
         internal static void Begin(DenMeshEditor component)
@@ -47,7 +96,16 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             _active = new EditSession(component);
             SceneView.duringSceneGui += _active.OnSceneGui;
+
+            // シーンビューの再描画は描画ループの外側から要求する（理由は OnEditorUpdate）
+            EditorApplication.update += _active.OnEditorUpdate;
+
+            _toolsHiddenBefore = Tools.hidden;
             Tools.hidden = true;
+
+            // プレビューフィルタへ「編集開始」を伝え、プロキシを生成させる
+            ActiveComponent.Value = component;
+
             SceneView.RepaintAll();
         }
 
@@ -56,9 +114,14 @@ namespace Dennokoworks.DenMeshEditor.Editor
             if (_active == null) return;
 
             SceneView.duringSceneGui -= _active.OnSceneGui;
+            EditorApplication.update -= _active.OnEditorUpdate;
             _active.Cleanup();
             _active = null;
-            Tools.hidden = false;
+
+            // 開始前の状態へ戻す（ユーザーが自分でツールを隠していた場合を潰さない）
+            Tools.hidden = _toolsHiddenBefore;
+            ActiveComponent.Value = null;
+
             SceneView.RepaintAll();
         }
 
@@ -115,6 +178,47 @@ namespace Dennokoworks.DenMeshEditor.Editor
             public int Start;
         }
 
+        /// <summary>
+        /// スクリーン座標キャッシュの有効性を判断するための視点情報。
+        /// これが変わらない限り、頂点のスクリーン座標は再計算しなくてよい。
+        /// </summary>
+        private struct ViewKey
+        {
+            public Vector3 Position;
+            public Quaternion Rotation;
+            public float FieldOfView;
+            public bool Orthographic;
+            public float OrthographicSize;
+            public Rect PixelRect;
+            public int GeometryGeneration;
+
+            public bool Matches(ViewKey other)
+            {
+                return GeometryGeneration == other.GeometryGeneration
+                       && Orthographic == other.Orthographic
+                       && Position == other.Position
+                       && Rotation == other.Rotation
+                       && FieldOfView == other.FieldOfView
+                       && OrthographicSize == other.OrthographicSize
+                       && PixelRect == other.PixelRect;
+            }
+
+            public static ViewKey From(Camera camera, int geometryGeneration)
+            {
+                var t = camera.transform;
+                return new ViewKey
+                {
+                    Position = t.position,
+                    Rotation = t.rotation,
+                    FieldOfView = camera.fieldOfView,
+                    Orthographic = camera.orthographic,
+                    OrthographicSize = camera.orthographicSize,
+                    PixelRect = camera.pixelRect,
+                    GeometryGeneration = geometryGeneration,
+                };
+            }
+        }
+
         private readonly DenMeshEditor _component;
         private readonly List<TargetState> _targets = new List<TargetState>();
         private readonly List<Influence> _influences = new List<Influence>();
@@ -140,7 +244,32 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
         private Rect _overlayRect;
 
+        // スクリーン座標キャッシュ。視点と形状が変わらない限り再計算しない
+        private ViewKey _screenCacheKey;
+        private bool _screenCacheValid;
+        private int _geometryGeneration;
+
+        // シーンビューの定期再描画
+        private double _lastRepaint;
+
+        // プロキシ未取得の状態がどれだけ続いているか
+        private double _fallbackSince = -1;
+        private bool _showFallbackWarning;
+
+        /// <summary>オーバーレイのレイアウトに影響する状態。Layout イベント時に固定する。</summary>
+        private bool _overlayShowsWarning;
+
+        /// <summary>オーバーレイのスライダー操作を Undo 1 段にまとめるためのグループ番号。</summary>
+        private int _settingsUndoGroup = -1;
+
+        /// <summary>プロキシを取得できていない対象があるか（生の状態）。</summary>
         internal bool AnyFallback { get; private set; }
+
+        /// <summary>
+        /// ユーザーへ警告を出すべきか。パイプライン再構築の数フレームで明滅しないよう、
+        /// フォールバック状態が一定時間続いたときだけ true になる。
+        /// </summary>
+        internal bool ShowFallbackWarning => _showFallbackWarning;
 
         /// <summary>
         /// 現在有効なブラシ半径。ドラッグ中にホイールで変更した未確定値を優先する。
@@ -158,15 +287,84 @@ namespace Dennokoworks.DenMeshEditor.Editor
             // 未確定のドラッグ内容は破棄し、プレビューをコンポーネントの内容へ戻す
             LiveEdits.Clear();
 
+            DisposeTargets();
+            _influences.Clear();
+            _candidates.Clear();
+            _nearbyTriangles.Clear();
+
+            ProxyRegistry.Prune();
+        }
+
+        private void DisposeTargets()
+        {
             foreach (var target in _targets)
             {
                 if (target.BakeScratch != null) Object.DestroyImmediate(target.BakeScratch);
             }
 
             _targets.Clear();
-            _influences.Clear();
-            _candidates.Clear();
-            _nearbyTriangles.Clear();
+            _screenCacheValid = false;
+        }
+
+        /// <summary>
+        /// Undo / Redo の後に、作業状態をコンポーネントの現在値から作り直す。
+        ///
+        /// これを行わないと、巻き戻ったコンポーネントに対して古い Working / Snapshot が
+        /// 残ったままになり、次のドラッグの <see cref="Commit"/> で「取り消したはずの編集」を
+        /// 書き戻してしまう。
+        /// </summary>
+        private void ResyncFromComponent()
+        {
+            if (_component == null)
+            {
+                End();
+                return;
+            }
+
+            LiveEdits.Clear();
+            _dragging = false;
+            _hasPendingRadius = false;
+            _settingsUndoGroup = -1;
+
+            // MeshEdit のインスタンスが差し替わっていれば、SyncTargetList が
+            // ターゲットごと作り直す（このとき選択も解除される）
+            Refresh(true);
+
+            // インスタンスが維持された場合は作業状態だけを作り直す
+            foreach (var target in _targets)
+            {
+                target.Working = target.Edit != null
+                    ? target.Edit.ToDictionary()
+                    : new Dictionary<int, Vector3>();
+                target.Snapshot = new Dictionary<int, Vector3>(target.Working);
+                target.Touched = false;
+            }
+
+            if (_hasSelection)
+            {
+                RecomputeMirrorCenter();
+                BuildInfluences();
+            }
+
+            SceneView.RepaintAll();
+        }
+
+        /// <summary>
+        /// シーンビューの定期再描画。
+        ///
+        /// Layout イベントの中で <c>sceneView.Repaint()</c> を呼ぶと
+        /// Repaint → OnGUI → Layout → Repaint の無限ループになり、編集中ずっと
+        /// 全力で再描画し続けてしまう。描画ループの外側から一定間隔で要求する。
+        /// </summary>
+        private void OnEditorUpdate()
+        {
+            // ドラッグ中はハンドル操作自体が再描画を駆動するので不要
+            if (_dragging) return;
+
+            if (EditorApplication.timeSinceStartup - _lastRepaint < RefreshIntervalSeconds) return;
+            _lastRepaint = EditorApplication.timeSinceStartup;
+
+            SceneView.RepaintAll();
         }
 
         // ------------------------------------------------------------------
@@ -181,12 +379,18 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             SyncTargetList();
 
-            AnyFallback = false;
+            // 頂点位置を作り直すので、スクリーン座標キャッシュは無効になる
+            unchecked
+            {
+                _geometryGeneration++;
+            }
+
+            var anyFallback = false;
 
             foreach (var target in _targets)
             {
                 var proxy = ProxyRegistry.ResolveOrOriginal(target.Original, out var usingProxy);
-                if (!usingProxy) AnyFallback = true;
+                if (!usingProxy) anyFallback = true;
 
                 if (target.Proxy != proxy)
                 {
@@ -213,6 +417,23 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
                 UpdateWorldVertices(target);
             }
+
+            AnyFallback = anyFallback;
+
+            // 編集開始直後やパイプライン再構築の数フレームは、正常でも一時的に
+            // フォールバック状態になる。状態が続いたときにだけ警告する（明滅させない）
+            if (!anyFallback)
+            {
+                _fallbackSince = -1;
+            }
+            else if (_fallbackSince < 0)
+            {
+                _fallbackSince = EditorApplication.timeSinceStartup;
+            }
+
+            _showFallbackWarning = _fallbackSince >= 0
+                                   && EditorApplication.timeSinceStartup - _fallbackSince
+                                   > FallbackWarningDelaySeconds;
         }
 
         private void SyncTargetList()
@@ -238,12 +459,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 if (same) return;
             }
 
-            foreach (var target in _targets)
-            {
-                if (target.BakeScratch != null) Object.DestroyImmediate(target.BakeScratch);
-            }
-
-            _targets.Clear();
+            DisposeTargets();
             ClearSelection();
 
             foreach (var edit in wanted)
@@ -297,6 +513,11 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// </summary>
         private static Matrix4x4 SkinMatrix(TargetState target, int index)
         {
+            // BuildInfluences はホイールでの半径変更やオーバーレイ操作から
+            // Refresh を経由せずに呼ばれる。ドラッグ中は Refresh が止まっているため、
+            // ここへ来た時点でプロキシが破棄済み（パイプライン再構築）ということがありうる。
+            if (target.Proxy == null) return Matrix4x4.identity;
+
             var fallback = target.Proxy.transform.localToWorldMatrix;
 
             if (target.Skinned == null || target.Bones == null || target.BindPoses == null ||
@@ -417,7 +638,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
             HandleDrag(current);
             DrawGizmos();
 
-            if (current.type == EventType.Layout || current.type == EventType.MouseMove)
+            // Layout イベントで Repaint を呼ぶと無限再描画になるため、ここではホバー追従が
+            // 必要なマウス移動時だけにする。定期更新は OnEditorUpdate が担当する。
+            if (current.type == EventType.MouseMove || current.type == EventType.MouseDrag)
             {
                 sceneView.Repaint();
             }
@@ -470,7 +693,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             var cameraPosition = camera.transform.position;
             var cameraForward = camera.transform.forward;
 
-            UpdateScreenCache(cameraPosition, cameraForward);
+            UpdateScreenCache(camera, cameraPosition, cameraForward);
             CollectCandidates(mousePosition);
             if (_candidates.Count == 0) return false;
 
@@ -488,8 +711,21 @@ namespace Dennokoworks.DenMeshEditor.Editor
             return false;
         }
 
-        private void UpdateScreenCache(Vector3 cameraPosition, Vector3 cameraForward)
+        /// <summary>
+        /// 全頂点のスクリーン座標と視線方向の深度を求める。
+        ///
+        /// 数万頂点に対する <c>WorldToGUIPoint</c> はマウス移動のたびに回すには重いので、
+        /// 視点と形状が変わっていなければ前回の結果をそのまま使う。ホバー中はカメラが
+        /// 止まっているため、ほとんどのマウス移動でキャッシュヒットする。
+        /// </summary>
+        private void UpdateScreenCache(Camera camera, Vector3 cameraPosition, Vector3 cameraForward)
         {
+            var key = ViewKey.From(camera, _geometryGeneration);
+            if (_screenCacheValid && _screenCacheKey.Matches(key)) return;
+
+            _screenCacheKey = key;
+            _screenCacheValid = true;
+
             foreach (var target in _targets)
             {
                 var vertices = target.WorldVertices;
@@ -825,7 +1061,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
             if (!_hasSelection) return;
 
             EditorGUI.BeginChangeCheck();
-            var moved = Handles.PositionHandle(_handlePosition, Quaternion.identity);
+
+            // Tools.pivotRotation（Global / Local）に追従させる
+            var moved = Handles.PositionHandle(_handlePosition, Tools.handleRotation);
             if (EditorGUI.EndChangeCheck())
             {
                 _handlePosition = moved;
@@ -833,7 +1071,19 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 ApplyDisplacement();
             }
 
-            if (!_dragging || current.type != EventType.MouseUp) return;
+            if (!_dragging) return;
+
+            // Handles.PositionHandle は hotControl を持った状態で MouseUp を受け取ると
+            // evt.Use() を呼ぶ。Event.current は同一インスタンスなので、ここへ来た時点で
+            // current.type は EventType.Used になっている。
+            // つまり type == MouseUp で判定すると確定処理が永久に走らず、
+            //   - ドラッグ結果がコンポーネントへ書き込まれない
+            //   - _dragging が立ちっぱなしで Refresh も止まる
+            //   - 編集終了時に Cleanup の LiveEdits.Clear() で編集が消える
+            // という壊れ方をする。Use() の影響を受けない rawType と、
+            // hotControl が落ちたことの両方で検出する（後者はウィンドウ外での
+            // リリースやフォーカス喪失も拾える）。
+            if (GUIUtility.hotControl != 0 && current.rawType != EventType.MouseUp) return;
 
             _dragging = false;
             Commit();
@@ -851,6 +1101,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// </summary>
         private void Commit()
         {
+            if (_component == null) return;
+
             // 記録より先に半径を書くと変更前の値が取れなくなるので、記録が先
             Undo.RecordObject(_component, "Den Mesh Editor");
 
@@ -867,6 +1119,13 @@ namespace Dennokoworks.DenMeshEditor.Editor
             }
 
             EditorUtility.SetDirty(_component);
+
+            // SerializedObject を経由せずフィールドを直接書き換えているため、
+            // Prefab インスタンス上ではオーバーライドとして記録されるよう明示しておく
+            if (PrefabUtility.IsPartOfPrefabInstance(_component))
+            {
+                PrefabUtility.RecordPrefabInstancePropertyModifications(_component);
+            }
 
             // 確定したので、プレビューはコンポーネントの内容を読むようになる
             LiveEdits.Clear();
@@ -974,7 +1233,16 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
         private void DrawOverlay()
         {
-            _overlayRect = new Rect(10, 10, 280, AnyFallback ? 152 : 116);
+            // Layout と Repaint で GUILayout の構成が変わると
+            // 「Getting control N's position in a group with only M controls」で例外になる。
+            // Refresh は毎イベント走って警告状態を書き換えるため、レイアウトに影響する状態は
+            // Layout イベント時に固定してから両イベントで使い回す。
+            if (Event.current.type == EventType.Layout)
+            {
+                _overlayShowsWarning = _showFallbackWarning;
+            }
+
+            _overlayRect = new Rect(10, 10, 280, _overlayShowsWarning ? 152 : 116);
 
             Handles.BeginGUI();
             GUILayout.BeginArea(_overlayRect, GUI.skin.box);
@@ -991,6 +1259,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
             var mirror = EditorGUILayout.Toggle("ミラー", _component.mirror);
             if (EditorGUI.EndChangeCheck())
             {
+                // スライダーのドラッグは毎フレーム変更を出すので、
+                // 最初の変更時のグループ番号を覚えておき、離したときに 1 段へまとめる
+                if (_settingsUndoGroup < 0) _settingsUndoGroup = Undo.GetCurrentGroup();
+
                 Undo.RecordObject(_component, "Den Mesh Editor Settings");
                 _hasPendingRadius = false;
                 _component.brushRadius = radius;
@@ -1006,7 +1278,13 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 }
             }
 
-            if (AnyFallback)
+            if (_settingsUndoGroup >= 0 && Event.current.rawType == EventType.MouseUp)
+            {
+                Undo.CollapseUndoOperations(_settingsUndoGroup);
+                _settingsUndoGroup = -1;
+            }
+
+            if (_overlayShowsWarning)
             {
                 EditorGUILayout.HelpBox("NDMF プレビュー未取得。他ツールの影響は反映されていません。",
                     MessageType.Warning);
