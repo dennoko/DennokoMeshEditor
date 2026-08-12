@@ -101,13 +101,13 @@ namespace Dennokoworks.DenMeshEditor.Editor
             {
                 var element = _edits.GetArrayElementAtIndex(i);
                 var targetProp = element.FindPropertyRelative("target");
-                var indicesProp = element.FindPropertyRelative("indices");
+                var countProp = element.FindPropertyRelative("count");
                 var vertexCountProp = element.FindPropertyRelative("vertexCount");
 
                 EditorGUILayout.BeginHorizontal();
                 EditorGUILayout.PropertyField(targetProp, GUIContent.none);
 
-                GUILayout.Label($"{indicesProp.arraySize} 頂点", GUILayout.Width(64));
+                GUILayout.Label($"{countProp.intValue} 頂点", GUILayout.Width(64));
 
                 if (GUILayout.Button("×", GUILayout.Width(22)))
                 {
@@ -126,12 +126,22 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             if (GUILayout.Button("対象を追加"))
             {
-                _edits.arraySize++;
-                var added = _edits.GetArrayElementAtIndex(_edits.arraySize - 1);
-                added.FindPropertyRelative("target").objectReferenceValue = null;
-                added.FindPropertyRelative("vertexCount").intValue = 0;
-                added.FindPropertyRelative("indices").ClearArray();
-                added.FindPropertyRelative("deltas").ClearArray();
+                // arraySize++ は直前の要素を複製する。編集データ（byte[] blob）まで
+                // 引き継がれると厄介なので、SerializedProperty で個別に潰すのではなく
+                // 素の MeshEdit を直接追加する
+                serializedObject.ApplyModifiedProperties();
+
+                var component = (DenMeshEditor)target;
+                Undo.RecordObject(component, "Add Den Mesh Editor Target");
+                component.edits.Add(new MeshEdit());
+                EditorUtility.SetDirty(component);
+
+                if (PrefabUtility.IsPartOfPrefabInstance(component))
+                {
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(component);
+                }
+
+                serializedObject.Update();
             }
 
             if (_edits.arraySize == 0)

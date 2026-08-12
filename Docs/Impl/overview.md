@@ -255,12 +255,36 @@ Assets/dennokoworks/DenMeshEditor/
 [Serializable]
 public class MeshEdit
 {
-    public Renderer  target;
-    public int       vertexCount;  // 整合性チェック用
-    public int[]     indices;      // 動かした頂点のインデックス
-    public Vector3[] deltas;       // 対応する移動量（メッシュローカル空間）
+    public Renderer target;
+    public int      vertexCount;  // 整合性チェック用
+
+    [SerializeField] private int    count;     // 編集された頂点数
+    [SerializeField] private byte[] blob;      // 16 バイト/頂点：int32 index + float32 x,y,z
+    [SerializeField] private int    revision;  // 書き込みのたびに ++（変更検出用）
 }
 ```
+
+### 8.1.1 なぜ byte[] 1 本なのか — 大量配置時のロードコスト
+
+論理的なデータは「インデックス + デルタ」のままだが、**保持形式は `byte[]` 1 本**にする。`List<int>` / `List<Vector3>` を素直に持つと、シーン上にコンポーネントを大量に置いたときに次の 2 つが線形に効いてくる。
+
+**シーン／Prefab のロード時間**
+
+Force Text の YAML では `List<Vector3>` が 1 頂点あたり 4 行に展開される。1 万頂点で 4 万行。対して `byte[]` は Unity のバイナリブロブとして **1 行の 16 進文字列**になる（同プロジェクト内の `Mesh._typelessdata` や `m_LayerCollisionMatrix` と同じ表現）。行数もパースコストも桁違いに小さい。
+
+**Prefab オーバーライドの件数**
+
+`PrefabUtility.RecordPrefabInstancePropertyModifications` は配列を `Array.data[i]` 単位で記録する。1 万頂点なら `indices` と `deltas` で **2 万件の PropertyModification** が Prefab インスタンスに積まれ、Prefab を含むシーンのロードとインスペクタ操作が極端に重くなる。`byte[]` ならプロパティ 1 件で済む。
+
+**変更検出（`revision`）**
+
+NDMF の `ComputeContext.Observe` は監視値の抽出関数を**毎フレーム**再評価する（`PropertyMonitor.CheckAllObjectsLoop`）。デルタ全体をハッシュしていると「コンポーネント数 × 編集頂点数」のコストが常時かかるため、書き込みのたびに増える `revision` を見るだけで済ませる。
+
+`revision` は**シリアライズ対象**であることが重要で、Undo / Redo・Prefab の Revert・ドメインリロードのいずれでもデータと一緒に巻き戻る。static なカウンタでは、これらの経路で状態が食い違う。
+
+**旧形式（v1）からの移行**
+
+`indices` / `deltas` のフィールドは残し、初回アクセス時に `blob` へ移行する。既存シーンのデシリアライズを壊さないため。移行判定は「両方 null なら即 return」の O(1) 経路であり、毎フレーム走るフィンガープリント計算から呼ばれても問題にならない。
 
 ### 8.2 なぜ任意の変形に耐えるのか
 
@@ -456,6 +480,48 @@ class DenMeshEditorPreviewFilter : IRenderFilter
 - ノードの `WhatChanged` は `RenderAspects.Mesh` を返す
 - フィルタは NDMF パスに `.PreviewingWith(new DenMeshEditorPreviewFilter())` で登録する
 
+#### 9.4.1 スケーラビリティ：`Instantiate` でシーンを走査しない
+
+**大量配置しても重くならないことは本ツールの最重要要件**であり、そこを壊す最大の落とし穴がここにある。
+
+`IRenderFilter.Instantiate` は**グループごと**（＝編集対象の Renderer ごと）に呼ばれる。ここで素直に `context.GetComponentsByType<DenMeshEditor>()` を呼んで全コンポーネントを `Observe` すると、シーン上のコンポーネント数 N に対して次のコストが生じる。
+
+| 経路 | NDMF 側の実装 | 結果 |
+| --- | --- | --- |
+| `GetComponentsByType` | キャッシュ無し。全シーンルートを `GetComponentsInChildren` で走査（`GlobalQueries.cs:52`） | グループ数 × シーン全走査 |
+| 同上（監視登録） | 全シーンルートに `MonitorGetComponents(root, ctx, true)` | シーンのどこでコンポーネントが増減してもノードが無効化される＝ノード再利用が効かない |
+| `Observe(component, extract, …)` | `PropertyMonitor.CheckAllObjectsLoop` が**毎フレーム**全リスナーを Fire し、`extract` を再評価（`PropertyMonitor.cs:86`） | リスナー数 N × N。しかもロード時だけでなく**待機中も継続** |
+
+つまり編集していない状態でも `O(N² × 編集頂点数)` が毎フレーム回り続ける。NDMF は 1 フレームあたり 2ms でタイムスライスして翌フレームへ持ち越すのでエディタは固まらないが、**メインスレッドを常時食い潰し、変更検出も遅延する**という形で現れる。
+
+対策は、**対象 Renderer に関係するコンポーネントを `GetTargetGroups` の時点で確定させ、`RenderGroup.WithData` でグループに添付して渡す**こと。
+
+```csharp
+// GetTargetGroups：Renderer → その Renderer を対象にしているコンポーネント
+builder.Add(RenderGroup.For(target).WithData(ownersOf[target]));
+
+// Instantiate：シーン走査も、無関係なコンポーネントの監視も行わない
+var components = group.GetData<List<DenMeshEditor>>();
+foreach (var c in components) ObserveEdits(context, c);
+```
+
+`RenderGroup<T>` は `IEnumerable` な Context を `SequenceEqual` で比較する（`IRenderFilter.cs:121-131`）ため、**対象コンポーネントの構成が変わればグループの同一性も変わり、ノードが自動的に作り直される。**「B が新たに R を対象に加えた」ようなケースも取りこぼさない。
+
+監視も 2 段に分ける。
+
+| 監視する場所 | 見る値 | 変化したときに起きること |
+| --- | --- | --- |
+| `GetTargetGroups` | 対象 Renderer の集合 + 編集の有無 | グループ分割のやり直し |
+| `Instantiate`（グループ内のコンポーネントのみ） | `vertexCount` / `Count` / `revision` | **そのグループのノードだけ**が作り直される |
+
+これにより、あるコンポーネントを編集しても、それが触っていない Renderer のノードは NDMF 側で完全再利用され（`NodeController.Refresh` の `changes == 0 && !IsInvalidated` 経路）、メッシュの複製が走らない。
+
+#### 9.4.2 上流メッシュの読み直しは間隔を空ける
+
+`OnFrame` で上流メッシュの in-place 書き換えを検出するには `Mesh.GetVertices` で読み直すしかないが、これは全頂点のコピーである（5 万頂点なら 1 Renderer あたり 600KB/frame）。編集済み Renderer の数だけ毎フレーム走らせると、**編集していない待機中もシーン全体が重くなる。**
+
+自分の編集内容の変化は `LiveEdits.Version` で即座に拾えるので、**上流側の検出だけ**を 0.2 秒間隔まで落とす。Renderer ごとに位相をずらし、読み直しが同じフレームに集中しないようにする。
+
 #### ドラッグ中の反映：コンポーネントを書き換えない
 
 `Observe(component)` による無効化は `ObjectChangeEvents` 経由であり、**コンポーネントを dirty にするとプレビューパイプライン全体が再構築される**。ドラッグ中に毎フレーム `Undo.RecordObject` + `SetDirty` を行うと、フレームごとにメッシュ複製が走って実用にならない。
@@ -599,15 +665,17 @@ Editor/
 | --- | --- |
 | 中心線 ε | `max(1e-4, brushRadius * 0.05)`。半径への相対値とし、ブラシサイズに追従させた |
 | 減衰プリセット | スムーズ（smoothstep）／直線／シャープ（二乗）／一定 の 4 種 |
-| 空間分割グリッド | **不要と判断し実装しない。** 影響頂点の探索は選択時とホイールでの半径変更時だけで、O(V) の総当たりで十分速い。ドラッグ中の各フレームはキャッシュした重みを使うだけなので探索が発生しない |
+| 影響頂点探索の空間分割 | **不要と判断し実装しない。** 探索は選択時とホイールでの半径変更時だけで、二乗距離での足切りを入れた O(V) の総当たりで十分速い。ドラッグ中の各フレームはキャッシュした重みを使うだけなので探索が発生しない |
+| 遮蔽三角形の空間分割 | **実装する。** こちらはマウス移動のたびに走るため O(三角形数) が効く。スクリーン空間のハッシュグリッド（CSR 形式）を視点・形状の変化時にだけ構築する（→ 最適化 第 3 版） |
 | ホイールでの半径変更 | 1 目盛り 1.05<sup>3</sup> ≒ 16%（`Event.delta.y` は 1 目盛り ±3）。範囲は 0.001〜0.5 m でオーバーレイのスライダーと共通 |
 | ピッキングの遮蔽判定 | レイ × 三角形（両面）。裏面カリングは使わない。候補は近い順に最大 8 件。遮蔽物は編集対象の Renderer のみ（→ 6.2） |
 | フィルタ順序 | `.AfterPlugin("nadena.dev.modular-avatar")` のみ。AAO はフェーズが後（Optimizing）なので指定不要。`AfterPlugin` は `WeakOrder` 制約かつ名前ベースの placeholder を使うため、MA 未導入でもエラーにならない |
 | 頂点順序変更の検知 | `vertexCount` 照合のみ。記録するのは**プロキシの頂点数**とする（元メッシュの頂点数を記録すると、上流で頂点数が変わった場合にチェックを素通りして誤った頂点が動く） |
 | ドラッグ終了の検知 | `GUIUtility.hotControl == 0` または `Event.rawType == MouseUp`。`Handles.PositionHandle` が MouseUp を `Use()` するため `Event.type` では検出できない（→ 修正履歴） |
 | プレビュー対象の絞り込み | 編集セッション中はデルタが空の Renderer も対象に含め、それ以外は編集を持つ Renderer だけに絞る。セッションの開始・終了は `PublishedValue<DenMeshEditor>` で NDMF へ通知する |
-| コンポーネント監視 | `context.Observe(component, extract, compare)` で**編集データのハッシュだけ**を監視する。引数なしの `Observe(component)` は比較関数が常に false のため、`brushRadius` を触っただけでパイプライン全体が再構築される |
-| 上流メッシュの変化検出 | 毎フレーム `Mesh.GetVertices(List)` で読み直し、64 点のサンプルを比較する。上流がメッシュを in-place で書き換えるとインスタンス比較では検出できないため |
+| 編集データの保持形式 | `byte[]` 1 本（16 バイト/頂点）+ `revision` カウンタ。ロード時間・Prefab オーバーライド件数・変更検出コストのすべてに効く（→ 8.1.1）。旧形式は初回アクセス時に自動移行 |
+| コンポーネント監視 | `context.Observe(component, extract, compare)` を使い、**グループに関係するコンポーネントだけ**を、**`revision` だけ**見て監視する。引数なしの `Observe(component)` は比較関数が常に false のため `brushRadius` を触っただけで全体が再構築される。また抽出関数は毎フレーム再評価されるので、監視範囲と抽出コストの両方を絞る必要がある（→ 9.4.1） |
+| 上流メッシュの変化検出 | `Mesh.GetVertices(List)` で読み直して 64 点のサンプルを比較する。上流がメッシュを in-place で書き換えるとインスタンス比較では検出できないため。ただし読み直しは全頂点コピーなので、`LiveEdits.Version` が動いていないときは 0.2 秒間隔まで落とす（→ 9.4.2） |
 
 ### 設計からの差分
 
@@ -665,12 +733,63 @@ Editor/
 - `Tools.hidden` を開始前の値へ戻す、`Handles.PositionHandle` を `Tools.handleRotation` に追従させる
 - `ProxyRegistry.Prune()` で破棄済みエントリを掃除
 
+---
+
+#### 最適化（第 3 版）— 大量配置時のコストを潰す
+
+「シーン上にこのコンポーネントを大量に置いてもロードが伸びず、重くならない」を最重要要件として全体を見直した。NDMF 1.11.0 のプレビュー基盤の実装（`ProxyPipeline` / `NodeController` / `TargetSet` / `PropertyMonitor` / `GlobalQueries`）を追って裏を取っている。
+
+**［最優先］`Instantiate` の全コンポーネント走査による O(N²)**
+
+グループごとにシーンを全走査し、全コンポーネントを `Observe` していた。NDMF は監視値の抽出関数を**毎フレーム**再評価するため、待機中も `O(N² × 編集頂点数)` が回り続けていた。`RenderGroup.WithData` で関係コンポーネントをグループに添付する構成へ変更（→ 9.4.1）。あわせて、あるコンポーネントの編集が無関係な Renderer のノードを無効化しなくなった。
+
+**［最優先］フィンガープリントが編集頂点数に比例**
+
+`EditsFingerprint` が全インデックスと全デルタを走査していた。これも毎フレーム評価される。`MeshEdit.revision`（シリアライズ済みカウンタ）を見るだけの O(編集対象数) に変更（→ 8.1.1）。
+
+**［最優先］`OnFrame` の毎フレーム全頂点コピー**
+
+上流メッシュの in-place 書き換え検出のために、編集済み Renderer 全部について毎フレーム `Mesh.GetVertices` していた。自分の編集の変化は `LiveEdits.Version` で拾えるので、上流側の検出だけ 0.2 秒間隔に落とし、Renderer ごとに位相をずらした（→ 9.4.2）。
+
+**［高］デルタのシリアライズ形式**
+
+`List<int>` + `List<Vector3>` を `byte[]` 1 本へ変更。シーン／Prefab のロード時間と、Prefab オーバーライドの件数に直接効く（→ 8.1.1）。旧形式は初回アクセス時に自動移行する。
+
+**［中］プレビュー更新パスの全頂点走査**
+
+`UpdateVertices` が「基準頂点のコピー → デルタ加算 → SetVertices → RecalculateBounds」で頂点配列を 3〜4 周していた。基準配列に直接書き込み、アップロード後に**書き込んだ頂点だけ元の値へ戻す**方式に変更（float の加減算は可逆でないため、引き算ではなく退避・復元にする）。全頂点分の作業バッファも不要になった。バウンズは上流のバウンズを最大デルタ長ぶん膨らませて代用する（保守的に大きくなるだけなのでカリング上は安全）。
+
+**［中］編集セッション中のコスト**
+
+| 箇所 | 変更 |
+| --- | --- |
+| `_geometryGeneration` | `Refresh` のたびに無条件で ++ していたため、スクリーン座標キャッシュが秒 10 回必ず捨てられていた。**頂点位置が実際に変化したときだけ**進める |
+| `UpdateWorldVertices` | `Mesh.vertices` / `BakeMesh().vertices` が毎回 `Vector3[]` を確保していた → `GetVertices(List)` で使い回す |
+| ボーンウェイト・バインドポーズ・三角形 | パイプライン再構築のたびに配列を確保し直していた → `GetBoneWeights(List)` / `GetBindposes(List)` / `GetTriangles(List, submesh)` |
+| `CollectNearbyTriangles` | ピック 1 回（＝マウス移動 1 回）ごとに全三角形を走査していた → スクリーン空間のハッシュグリッド（CSR 形式）を視点・形状の変化時にだけ構築し、クリック位置のセル 1 つを引く。外接矩形を 24px 広げて登録してあるため取りこぼさない |
+| 頂点のスクリーン射影 | `HandleUtility.WorldToGUIPoint` は Handles.matrix と GUI クリップを経由して重い。**代表点 2 つで照合して一致した場合だけ**自前射影に切り替える（前提が崩れていれば従来経路のまま） |
+| `BuildInfluences` | 影響圏外の頂点にも平方根を計算していた → 二乗距離で弾いてから `Mathf.Sqrt` |
+| `ApplyDisplacement` | ドラッグ中、毎フレーム `Dictionary` を新規確保していた → インスタンスを使い回して中身だけ入れ替える |
+| `GeneratedMeshTracker` | 登録解除が `List.Remove`（O(n)）→ `HashSet` |
+| `ProxyRegistry` | `Prune()` がセッション終了時にしか走らず、破棄済みエントリが溜まりうる → 件数のしきい値で自動掃除 |
+
+**採用しなかった案：Burst / Compute Shader**
+
+第 1 章の「重い dll 依存を持たない」という方針に真っ向から反するため、Burst・Collections パッケージの導入は見送る。Compute Shader も、NDMF のプロキシパイプラインが CPU 側 `Mesh` を前提にしており、`BakeMesh`・ピッキング・ベイクとの整合と「プレビューとビルドで同じコードを共有する」という担保が崩れるため採らない。
+
+追加依存ゼロで使える Job System（`Unity.Jobs` / `NativeArray` は `UnityEngine.CoreModule` に含まれる）は将来の選択肢として残るが、効くのは編集セッション中の応答性だけで、最重要要件である待機時・ロード時のコストには寄与しない。
+
 ### 未検証項目（Unity 上で確認が必要）
 
 1. Scale Adjuster 適用下で、シーンビューの頂点位置がスケール調整に追従すること
 2. スキニング行列の逆変換により、ドラッグ量とメッシュの動きが一致すること（ボーンにスケールがかかった部位で特に）
 3. ドラッグ中のフレームレート（`Mesh.SetVertices` によるフルアップロードが毎フレーム走る）
 4. ドラッグ確定が 1 回のマウスリリースで行われること（上記の致命バグの回帰確認）
+6. **旧形式データの移行**：`indices` / `deltas` を持つ既存シーンを開いて編集内容が保たれること
+7. **`byte[]` の YAML 表現**：`blob` が 1 行の 16 進文字列として書き出されること（同プロジェクト内の `Mesh._typelessdata` と同じ形。実際にシーンを保存して目視確認する）
+8. **Prefab オーバーライド**：Prefab インスタンス上で編集したとき、オーバーライドが `blob` 1 件にまとまること
+9. **自前射影の校正**：`TryCalibrateFastProjection` が期待どおり成立するか（成立しなくても従来経路へフォールバックするだけだが、成立していないと高速化が効かない）
+10. **遮蔽ハッシュグリッド**：ピック結果が従来と一致すること。特にカメラをメッシュへ極端に近付けた状態（オーバーフロー経路）と、カメラ面をまたぐ三角形がある状態
 5. 編集開始時にプロキシが生成され、`ShowFallbackWarning` が誤って出ないこと
 
 ### 未対応

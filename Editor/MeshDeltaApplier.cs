@@ -55,8 +55,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
             // vertexCount が 0 のデータは旧形式または未記録。頂点数チェックは省略する。
             if (edit.vertexCount != 0 && edit.vertexCount != mesh.vertexCount) return false;
 
-            foreach (var index in edit.indices)
+            var count = edit.Count;
+            for (var i = 0; i < count; i++)
             {
+                var index = edit.GetIndex(i);
                 if (index < 0 || index >= mesh.vertexCount) return false;
             }
 
@@ -71,29 +73,12 @@ namespace Dennokoworks.DenMeshEditor.Editor
         {
             if (vertices == null || edit == null) return;
 
-            var count = Mathf.Min(edit.indices.Count, edit.deltas.Count);
+            var count = edit.Count;
             for (var i = 0; i < count; i++)
             {
-                var index = edit.indices[i];
+                var index = edit.GetIndex(i);
                 if (index < 0 || index >= vertices.Length) continue;
-                vertices[index] += edit.deltas[i];
-            }
-        }
-
-        /// <summary>
-        /// <see cref="ApplyInPlace(Vector3[], MeshEdit)"/> の List 版。
-        /// プレビューでは確保を避けるため配列ではなく使い回しの List を扱う。
-        /// </summary>
-        internal static void ApplyInPlace(List<Vector3> vertices, MeshEdit edit)
-        {
-            if (vertices == null || edit == null) return;
-
-            var count = Mathf.Min(edit.indices.Count, edit.deltas.Count);
-            for (var i = 0; i < count; i++)
-            {
-                var index = edit.indices[i];
-                if (index < 0 || index >= vertices.Count) continue;
-                vertices[index] += edit.deltas[i];
+                vertices[index] += edit.GetDelta(i);
             }
         }
 
@@ -119,25 +104,59 @@ namespace Dennokoworks.DenMeshEditor.Editor
         }
 
         /// <summary>
-        /// 生成済みメッシュの頂点を「基準頂点 + デルタ」で書き換える。
-        /// ドラッグ中に毎フレーム呼ばれるため、作業用 List は呼び出し側で使い回す
-        /// （Clear + AddRange は内部で Array.Copy になり、容量が足りていれば確保は発生しない）。
+        /// 生成済みメッシュの頂点を「基準頂点 + デルタ」で書き換える。ドラッグ中に毎フレーム呼ばれる。
+        ///
+        /// 基準頂点のコピーは取らない。<paramref name="baseVertices"/> に直接デルタを書き込み、
+        /// アップロード後に書き込んだ頂点だけを元へ戻す。デルタは疎なので復元は O(編集頂点数) で済み、
+        /// 全頂点分の作業バッファ（Renderer あたり 頂点数 × 12 バイト）も不要になる。
+        ///
+        /// 「デルタを引き算して戻す」ではなく「元の値を退避して書き戻す」形にしているのは、
+        /// float の加減算が可逆でないため。誤差が毎フレーム蓄積するのを避ける。
         /// </summary>
+        /// <param name="sourceBounds">上流メッシュのバウンズ。これを膨らませて使う。</param>
+        /// <param name="restoreScratch">復元用の退避領域。呼び出し側で使い回す。</param>
         internal static void UpdateVertices(Mesh mesh, List<Vector3> baseVertices, MeshEdit edit,
-            List<Vector3> scratch)
+            Bounds sourceBounds, List<Vector3> restoreScratch)
         {
-            if (mesh == null || baseVertices == null || scratch == null) return;
+            if (mesh == null || baseVertices == null || edit == null || restoreScratch == null) return;
 
-            scratch.Clear();
-            if (scratch.Capacity < baseVertices.Count) scratch.Capacity = baseVertices.Count;
-            scratch.AddRange(baseVertices);
+            restoreScratch.Clear();
 
-            ApplyInPlace(scratch, edit);
+            var count = edit.Count;
+            var vertexCount = baseVertices.Count;
+            var maxDeltaSq = 0f;
 
-            mesh.SetVertices(scratch);
+            for (var i = 0; i < count; i++)
+            {
+                var index = edit.GetIndex(i);
+                if (index < 0 || index >= vertexCount) continue;
 
-            // 法線・接線は再計算しない
-            mesh.RecalculateBounds();
+                var delta = edit.GetDelta(i);
+                var sq = delta.sqrMagnitude;
+                if (sq > maxDeltaSq) maxDeltaSq = sq;
+
+                restoreScratch.Add(baseVertices[index]);
+                baseVertices[index] += delta;
+            }
+
+            mesh.SetVertices(baseVertices);
+
+            // 逆順に戻す。インデックスが重複していても正しく復元できる
+            var restoreAt = restoreScratch.Count - 1;
+            for (var i = count - 1; i >= 0; i--)
+            {
+                var index = edit.GetIndex(i);
+                if (index < 0 || index >= vertexCount) continue;
+
+                baseVertices[index] = restoreScratch[restoreAt--];
+            }
+
+            // 法線・接線は再計算しない。
+            // バウンズも全頂点走査（RecalculateBounds）はせず、上流のバウンズを
+            // 最大デルタ長ぶん膨らませる。保守的に大きくなるだけなのでカリング上は安全。
+            var margin = Mathf.Sqrt(maxDeltaSq);
+            sourceBounds.Expand(margin * 2f);
+            mesh.bounds = sourceBounds;
         }
 
         /// <summary>
@@ -151,12 +170,12 @@ namespace Dennokoworks.DenMeshEditor.Editor
             mesh.name = source.name + "_edited";
 
             var deltaVertices = new Vector3[mesh.vertexCount];
-            var count = Mathf.Min(edit.indices.Count, edit.deltas.Count);
+            var count = edit.Count;
             for (var i = 0; i < count; i++)
             {
-                var index = edit.indices[i];
+                var index = edit.GetIndex(i);
                 if (index < 0 || index >= deltaVertices.Length) continue;
-                deltaVertices[index] = edit.deltas[i];
+                deltaVertices[index] = edit.GetDelta(i);
             }
 
             // 法線・接線のデルタは付けない（再計算しない方針と同じ理由）
@@ -176,7 +195,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
     [InitializeOnLoad]
     internal static class GeneratedMeshTracker
     {
-        private static readonly List<Mesh> Tracked = new List<Mesh>();
+        // 大量の Renderer を扱うので、登録解除が O(n) にならないよう HashSet にする
+        private static readonly HashSet<Mesh> Tracked = new HashSet<Mesh>();
 
         static GeneratedMeshTracker()
         {

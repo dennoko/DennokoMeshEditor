@@ -18,10 +18,23 @@ namespace Dennokoworks.DenMeshEditor.Editor
     {
         private static readonly Dictionary<Renderer, Renderer> Map = new Dictionary<Renderer, Renderer>();
 
+        /// <summary>次に自動掃除を行う件数のしきい値。</summary>
+        private static int _pruneThreshold = 64;
+
         internal static void Report(Renderer original, Renderer proxy)
         {
             if (original == null || proxy == null) return;
+
+            var isNew = !Map.ContainsKey(original);
             Map[original] = proxy;
+
+            // Report は毎フレーム全 Renderer に対して呼ばれるので、掃除は
+            // 「新しいキーが増えて、しきい値を超えたとき」だけに限る。
+            // 編集セッションを一度も開かないまま破棄済み Renderer が溜まるのを防ぐ
+            if (!isNew || Map.Count < _pruneThreshold) return;
+
+            Prune();
+            _pruneThreshold = Mathf.Max(64, Map.Count * 2);
         }
 
         /// <summary>

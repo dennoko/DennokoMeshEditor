@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Threading.Tasks;
 using nadena.dev.ndmf.preview;
+using UnityEditor;
 using UnityEngine;
 
 namespace Dennokoworks.DenMeshEditor.Editor
@@ -11,6 +12,16 @@ namespace Dennokoworks.DenMeshEditor.Editor
     ///
     /// 併せて、生成されたプロキシ Renderer を <see cref="ProxyRegistry"/> へ登録し、
     /// シーンビュー編集ツールが「他ツール適用後の形状」を参照できるようにする。
+    ///
+    /// <b>スケーラビリティ上の要点</b>：
+    /// <see cref="Instantiate"/> はシーンを走査しない。対象 Renderer に関係するコンポーネントは
+    /// <see cref="GetTargetGroups"/> の時点で確定させ、<c>RenderGroup.WithData</c> で
+    /// グループに添付して渡す。これを怠ると、
+    ///   - グループ数 × シーン全走査（<c>ComputeContext.GetComponentsByType</c> はキャッシュされない）
+    ///   - グループ数 × 全コンポーネントの監視登録
+    /// が発生し、シーン上のコンポーネント数 N に対して <c>O(N^2)</c> になる。
+    /// しかも NDMF の <c>PropertyMonitor</c> は監視値の抽出関数を毎フレーム再評価するため、
+    /// このコストはロード時だけでなく待機中も継続的にかかる。
     /// </summary>
     internal class DenMeshEditorPreviewFilter : IRenderFilter
     {
@@ -20,15 +31,18 @@ namespace Dennokoworks.DenMeshEditor.Editor
             // それ以外は編集を持つ Renderer だけを対象にして、常時プロキシを作らないようにする。
             var editing = context.Observe(EditSession.ActiveComponent, c => c, (a, b) => a == b);
 
-            var targets = new List<Renderer>();
-            var seen = new HashSet<Renderer>();
+            // Renderer → その Renderer を対象にしているコンポーネント
+            var byRenderer = new Dictionary<Renderer, List<DenMeshEditor>>();
+            var order = new List<Renderer>();
 
             foreach (var component in context.GetComponentsByType<DenMeshEditor>())
             {
                 if (component == null) continue;
                 if (!context.ActiveInHierarchy(component.gameObject)) continue;
 
-                ObserveEdits(context, component);
+                // ここで監視するのは「対象 Renderer の集合」と「編集の有無」だけ。
+                // デルタの中身はグループ分割に影響しないので、ノード側（Instantiate）で見る
+                ObserveShape(context, component);
 
                 var isEditing = ReferenceEquals(component, editing);
 
@@ -37,14 +51,24 @@ namespace Dennokoworks.DenMeshEditor.Editor
                     if (edit?.target == null) continue;
                     if (!isEditing && !edit.HasEdits) continue;
 
-                    if (seen.Add(edit.target)) targets.Add(edit.target);
+                    if (!byRenderer.TryGetValue(edit.target, out var owners))
+                    {
+                        owners = new List<DenMeshEditor>();
+                        byRenderer.Add(edit.target, owners);
+                        order.Add(edit.target);
+                    }
+
+                    if (!owners.Contains(component)) owners.Add(component);
                 }
             }
 
             var builder = ImmutableList.CreateBuilder<RenderGroup>();
-            foreach (var target in targets)
+            foreach (var target in order)
             {
-                builder.Add(RenderGroup.For(target));
+                // WithData で添付したリストはグループの同一性に含まれる
+                // （RenderGroup<T> は IEnumerable を SequenceEqual で比較する）。
+                // 対象コンポーネントの構成が変われば自動的にノードが作り直される。
+                builder.Add(RenderGroup.For(target).WithData(byRenderer[target]));
             }
 
             return builder.ToImmutable();
@@ -55,18 +79,26 @@ namespace Dennokoworks.DenMeshEditor.Editor
             IEnumerable<(Renderer, Renderer)> proxyPairs,
             ComputeContext context)
         {
-            var components = new List<DenMeshEditor>();
-            foreach (var component in context.GetComponentsByType<DenMeshEditor>())
+            // GetTargetGroups が確定させた「この Renderer に関係するコンポーネント」だけを扱う。
+            // シーン走査も、無関係なコンポーネントの監視も行わない
+            var components = group.GetData<List<DenMeshEditor>>() ?? new List<DenMeshEditor>();
+
+            foreach (var component in components)
             {
                 if (component == null) continue;
-                if (!context.ActiveInHierarchy(component.gameObject)) continue;
-
                 ObserveEdits(context, component);
-                components.Add(component);
             }
 
             var node = new DenMeshEditorPreviewNode(proxyPairs, components);
             return Task.FromResult<IRenderFilterNode>(node);
+        }
+
+        /// <summary>
+        /// グループ分割に影響する部分だけを監視する。対象 Renderer と、編集の有無。
+        /// </summary>
+        private static void ObserveShape(ComputeContext context, DenMeshEditor component)
+        {
+            context.Observe(component, ShapeFingerprint, (a, b) => a == b);
         }
 
         /// <summary>
@@ -75,14 +107,46 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// 引数なしの <c>context.Observe(component)</c> は比較関数が常に false
         /// （NDMF: SingleObjectQueries.cs）なので、brushRadius や falloff のような
         /// プレビュー結果に影響しないプロパティを触っただけでもパイプライン全体が
-        /// 再構築される。スライダーをドラッグすると毎フレーム メッシュを複製し直すことになるため、
-        /// 実際に描画へ効く値だけを抽出して監視する。
+        /// 再構築される。実際に描画へ効く値だけを抽出して監視する。
         /// </summary>
         private static void ObserveEdits(ComputeContext context, DenMeshEditor component)
         {
             context.Observe(component, EditsFingerprint, (a, b) => a == b);
         }
 
+        private static int ShapeFingerprint(DenMeshEditor component)
+        {
+            if (component == null) return 0;
+
+            unchecked
+            {
+                var hash = 17;
+                hash = hash * 31 + component.edits.Count;
+
+                foreach (var edit in component.edits)
+                {
+                    if (edit == null)
+                    {
+                        hash = hash * 31 + 1;
+                        continue;
+                    }
+
+                    hash = hash * 31 + (edit.target != null ? edit.target.GetInstanceID() : 0);
+                    hash = hash * 31 + (edit.HasEdits ? 1 : 0);
+                }
+
+                return hash;
+            }
+        }
+
+        /// <summary>
+        /// 編集内容のフィンガープリント。
+        ///
+        /// NDMF はこの関数を毎フレーム呼ぶ（PropertyMonitor.CheckAllObjectsLoop）。
+        /// デルタ全体を走査すると編集頂点数に比例したコストが常時かかるため、
+        /// <see cref="MeshEdit.Revision"/> を見るだけの O(編集対象数) に抑える。
+        /// vertexCount と Count も混ぜているのは、revision を通らない外部書き換えに対する安全網。
+        /// </summary>
         private static int EditsFingerprint(DenMeshEditor component)
         {
             if (component == null) return 0;
@@ -90,6 +154,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
             unchecked
             {
                 var hash = 17;
+                hash = hash * 31 + component.edits.Count;
+
                 foreach (var edit in component.edits)
                 {
                     if (edit == null)
@@ -100,20 +166,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
                     hash = hash * 31 + (edit.target != null ? edit.target.GetInstanceID() : 0);
                     hash = hash * 31 + edit.vertexCount;
-                    hash = hash * 31 + edit.indices.Count;
-
-                    for (var i = 0; i < edit.indices.Count; i++)
-                    {
-                        hash = hash * 31 + edit.indices[i];
-                    }
-
-                    for (var i = 0; i < edit.deltas.Count; i++)
-                    {
-                        var delta = edit.deltas[i];
-                        hash = hash * 31 + delta.x.GetHashCode();
-                        hash = hash * 31 + delta.y.GetHashCode();
-                        hash = hash * 31 + delta.z.GetHashCode();
-                    }
+                    hash = hash * 31 + edit.Count;
+                    hash = hash * 31 + edit.Revision;
                 }
 
                 return hash;
@@ -151,7 +205,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
                         if (edit.HasEdits)
                         {
                             skipped?.Add(
-                                $"頂点数が編集時と異なるため {edit.indices.Count} 頂点分の編集を適用できませんでした"
+                                $"頂点数が編集時と異なるため {edit.Count} 頂点分の編集を適用できませんでした"
                                 + $"（現在 {vertexCount} / 編集時 {edit.vertexCount}）。"
                                 + "元メッシュが差し替わったか、再インポートで頂点順が変化した可能性があります。");
                         }
@@ -172,16 +226,16 @@ namespace Dennokoworks.DenMeshEditor.Editor
                         continue;
                     }
 
-                    if (!edit.HasEdits) continue;
+                    var count = edit.Count;
+                    if (count == 0) continue;
 
-                    var count = Mathf.Min(edit.indices.Count, edit.deltas.Count);
                     merged ??= new Dictionary<int, Vector3>(count);
 
                     for (var i = 0; i < count; i++)
                     {
-                        var index = edit.indices[i];
+                        var index = edit.GetIndex(i);
                         merged.TryGetValue(index, out var accumulated);
-                        merged[index] = accumulated + edit.deltas[i];
+                        merged[index] = accumulated + edit.GetDelta(i);
                     }
                 }
             }
@@ -200,6 +254,17 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private const int FingerprintSamples = 64;
 
         /// <summary>
+        /// 上流メッシュを読み直す間隔（秒）。
+        ///
+        /// 上流が「その場で」メッシュを書き換えるケースを拾うには読み直すしかないが、
+        /// <c>Mesh.GetVertices</c> は全頂点のコピーであり、編集済み Renderer の数だけ
+        /// 毎フレーム走らせるとシーン全体が重くなる（5 万頂点なら 1 Renderer あたり 600KB/frame）。
+        /// 自分の編集内容の変化は <see cref="LiveEdits.Version"/> で即座に拾えるので、
+        /// 上流側の検出だけをこの間隔まで落とす。
+        /// </summary>
+        private const double UpstreamProbeInterval = 0.2;
+
+        /// <summary>
         /// プロキシ 1 つ分の状態。
         /// </summary>
         private sealed class Entry
@@ -210,7 +275,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             /// <summary>上流ノードが出力したメッシュ。デルタ加算の基準。</summary>
             public Mesh Source;
 
-            /// <summary>上流メッシュの頂点。毎フレーム読み直すため List を使い回す。</summary>
+            /// <summary>上流メッシュの頂点。毎回読み直すため List を使い回す。</summary>
             public readonly List<Vector3> UpstreamVertices = new List<Vector3>();
 
             /// <summary>UpstreamVertices から間引いたサンプル。上流の書き換え検出用。</summary>
@@ -219,9 +284,19 @@ namespace Dennokoworks.DenMeshEditor.Editor
             /// <summary>自分が生成したメッシュ。編集が無ければ null。</summary>
             public Mesh Generated;
 
-            public readonly List<Vector3> Scratch = new List<Vector3>();
+            /// <summary>デルタ適用時に上書きした頂点の退避領域。編集頂点数ぶんしか使わない。</summary>
+            public readonly List<Vector3> Restore = new List<Vector3>();
 
             public int Version = int.MinValue;
+
+            /// <summary>次に上流メッシュを読み直す時刻。</summary>
+            public double NextProbe;
+
+            /// <summary>読み直しの位相（0..1）。全 Renderer が同じフレームに集中しないようずらす。</summary>
+            public double Phase;
+
+            /// <summary>一度でも上流を読めたか。初回だけは間隔を待たずに読む。</summary>
+            public bool Probed;
 
             /// <summary>読み取り不可メッシュの警告を 1 度だけ出すためのフラグ。</summary>
             public bool WarnedNotReadable;
@@ -239,7 +314,15 @@ namespace Dennokoworks.DenMeshEditor.Editor
             foreach (var (original, proxy) in proxyPairs)
             {
                 if (original == null) continue;
-                _entries[original] = new Entry { Original = original, Proxy = proxy };
+
+                _entries[original] = new Entry
+                {
+                    Original = original,
+                    Proxy = proxy,
+
+                    // 全 Renderer の読み直しが同じフレームに集中しないよう位相をずらす
+                    Phase = (original.GetInstanceID() & 0xFF) / 255.0,
+                };
             }
         }
 
@@ -269,13 +352,43 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 entry.Source = upstream;
                 entry.Fingerprint = null;
                 entry.Version = int.MinValue;
+                entry.Probed = false;
+                entry.WarnedNotReadable = false;
                 DestroyGenerated(entry);
             }
 
             if (entry.Source == null) return;
 
+            var now = EditorApplication.timeSinceStartup;
+            var rebuild = entry.Version != LiveEdits.Version;
+
+            // 上流の読み直しは間隔を空けて行う。ここを毎フレームにすると、
+            // 編集していない待機中も編集済み Renderer の数だけ全頂点コピーが走り続ける。
+            // 自分の編集内容の変化は LiveEdits.Version で即座に拾えるので、
+            // 間隔を空けて困るのは「上流がメッシュを in-place で書き換える」ケースだけ。
+            if (!entry.Probed || now >= entry.NextProbe)
+            {
+                entry.NextProbe = now + UpstreamProbeInterval * (0.75 + 0.5 * entry.Phase);
+
+                if (ReadUpstream(entry, original) && UpdateFingerprint(entry)) rebuild = true;
+            }
+
+            if (rebuild && entry.UpstreamVertices.Count > 0)
+            {
+                entry.Version = LiveEdits.Version;
+                Rebuild(entry);
+            }
+
+            if (entry.Generated != null) MeshDeltaApplier.SetSharedMesh(proxy, entry.Generated);
+        }
+
+        /// <summary>
+        /// 上流メッシュの頂点を読み直す。読めなければ false。
+        /// </summary>
+        private static bool ReadUpstream(Entry entry, Renderer original)
+        {
             // 上流がメッシュを「その場で」書き換えるケース（本ツールの UpdateVertices と同じ方式）では
-            // インスタンスが変わらないため、毎フレーム読み直して変化を検出する。
+            // インスタンスが変わらないため、読み直して変化を検出する。
             // GetVertices は List を使い回すので、容量が足りていれば確保は発生しない。
             entry.Source.GetVertices(entry.UpstreamVertices);
 
@@ -293,18 +406,13 @@ namespace Dennokoworks.DenMeshEditor.Editor
                         original);
                 }
 
-                return;
+                // 読めないメッシュを毎フレーム叩き続けないよう、探索済みとして扱う
+                entry.Probed = true;
+                return false;
             }
 
-            var upstreamChanged = UpdateFingerprint(entry);
-
-            if (upstreamChanged || entry.Version != LiveEdits.Version)
-            {
-                entry.Version = LiveEdits.Version;
-                Rebuild(entry);
-            }
-
-            if (entry.Generated != null) MeshDeltaApplier.SetSharedMesh(proxy, entry.Generated);
+            entry.Probed = true;
+            return true;
         }
 
         /// <summary>
@@ -370,7 +478,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 GeneratedMeshTracker.Track(entry.Generated);
             }
 
-            MeshDeltaApplier.UpdateVertices(entry.Generated, entry.UpstreamVertices, edit, entry.Scratch);
+            MeshDeltaApplier.UpdateVertices(
+                entry.Generated, entry.UpstreamVertices, edit, entry.Source.bounds, entry.Restore);
         }
 
         private static void DestroyGenerated(Entry entry)
