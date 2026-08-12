@@ -235,6 +235,17 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private Vector3 _handlePosition;
         private bool _dragging;
 
+        /// <summary>
+        /// 選択頂点の「自分のデルタを除いた」ワールド位置と、そのスキニング行列。
+        ///
+        /// ハンドル位置は常に <c>_selectedBaseWorld + skin * delta</c> で表せる。
+        /// これを持っておくと、Undo でデルタが巻き戻ったときに、NDMF プレビューの
+        /// 再構築（非同期）を待たずにハンドルを正しい位置へ戻せる。
+        /// </summary>
+        private Vector3 _selectedBaseWorld;
+
+        private Matrix4x4 _selectedSkin = Matrix4x4.identity;
+
         // ドラッグ中にホイールで変更した半径。確定するまでコンポーネントには書かない
         private float _pendingRadius;
         private bool _hasPendingRadius;
@@ -326,6 +337,11 @@ namespace Dennokoworks.DenMeshEditor.Editor
             _hasPendingRadius = false;
             _settingsUndoGroup = -1;
 
+            // 選択の復元用に控えておく（Refresh で解除されうるため、読むのは先）
+            var hadSelection = _hasSelection;
+            var selectedRenderer = _selectedTarget?.Original;
+            var selectedIndex = _selectedIndex;
+
             // MeshEdit のインスタンスが差し替わっていれば、SyncTargetList が
             // ターゲットごと作り直す（このとき選択も解除される）
             Refresh(true);
@@ -340,8 +356,18 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 target.Touched = false;
             }
 
+            // Undo で変わるのはデルタだけで、どの頂点を掴んでいるかは変わらない。
+            // 対象が作り直されて選択が落ちた場合は選び直す
+            if (hadSelection && !_hasSelection)
+            {
+                RestoreSelection(selectedRenderer, selectedIndex);
+            }
+
             if (_hasSelection)
             {
+                // ハンドルを巻き戻ったデルタの位置へ戻す。
+                // プレビューメッシュの再構築を待たずに決まるので、ここで確定できる
+                SyncHandleToSelection();
                 RecomputeMirrorCenter();
                 BuildInfluences();
             }
@@ -937,12 +963,52 @@ namespace Dennokoworks.DenMeshEditor.Editor
             _hasSelection = true;
             _selectedTarget = target;
             _selectedIndex = index;
+
+            // デルタを差し引いた基準位置を控えておく（Undo でハンドルを戻すために使う）
+            _selectedSkin = SkinMatrix(target, index);
+            target.Working.TryGetValue(index, out var delta);
+            _selectedBaseWorld = target.WorldVertices[index] - _selectedSkin.MultiplyVector(delta);
+
             _centerWorld = target.WorldVertices[index];
             _handlePosition = _centerWorld;
 
             RecomputeMirrorCenter();
             BuildInfluences();
             CommitSnapshot();
+        }
+
+        /// <summary>
+        /// 現在のデルタからハンドル位置を求め直す。
+        ///
+        /// プレビューメッシュを読まずに決まるため、NDMF のパイプライン再構築が
+        /// 非同期であることに影響されない。
+        /// </summary>
+        private void SyncHandleToSelection()
+        {
+            if (!_hasSelection || _selectedTarget == null) return;
+
+            _selectedTarget.Working.TryGetValue(_selectedIndex, out var delta);
+            _centerWorld = _selectedBaseWorld + _selectedSkin.MultiplyVector(delta);
+            _handlePosition = _centerWorld;
+        }
+
+        /// <summary>
+        /// 対象の作り直しで解除された選択を、同じ Renderer・同じ頂点番号で選び直す。
+        /// </summary>
+        private void RestoreSelection(Renderer original, int index)
+        {
+            if (original == null || index < 0) return;
+
+            foreach (var target in _targets)
+            {
+                if (target.Original != original) continue;
+                if (target.WorldVertices == null || index >= target.WorldVertices.Length) return;
+
+                _hasSelection = true;
+                _selectedTarget = target;
+                _selectedIndex = index;
+                return;
+            }
         }
 
         private void RecomputeMirrorCenter()
@@ -1097,11 +1163,36 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
         /// <summary>
         /// ドラッグ結果をコンポーネントへ書き込んで確定する。
-        /// Undo の記録と書き換えを同じフレームで行うため、1 ドラッグにつき Undo 1 段になる。
+        ///
+        /// 「ハンドルを掴んで動かす 1 動作 = Undo 1 段」にするため、書き込みは
+        /// マウスを離したときの 1 回だけにし（ドラッグ中は <see cref="LiveEdits"/> 経由）、
+        /// さらに Undo グループを明示的に切る。
         /// </summary>
         private void Commit()
         {
             if (_component == null) return;
+
+            // 書き込むものが無ければ Undo エントリも作らない。
+            // 空の段が積まれると、Ctrl+Z を押しても何も起きないように見える
+            var hasChanges = _hasPendingRadius;
+            foreach (var target in _targets)
+            {
+                if (!target.Touched || target.Mesh == null) continue;
+                hasChanges = true;
+                break;
+            }
+
+            if (!hasChanges)
+            {
+                LiveEdits.Clear();
+                return;
+            }
+
+            // Unity は「同じ Undo グループ・同じ名前」の RecordObject を 1 段にまとめる。
+            // グループが自動で進むのは限られたタイミングだけなので、明示的に切らないと
+            // 複数回のドラッグが 1 段に潰れ、Ctrl+Z で一気に巻き戻る。
+            Undo.IncrementCurrentGroup();
+            Undo.SetCurrentGroupName("Den Mesh Editor");
 
             // 記録より先に半径を書くと変更前の値が取れなくなるので、記録が先
             Undo.RecordObject(_component, "Den Mesh Editor");
@@ -1126,6 +1217,14 @@ namespace Dennokoworks.DenMeshEditor.Editor
             {
                 PrefabUtility.RecordPrefabInstancePropertyModifications(_component);
             }
+
+            // RecordObject の差分は通常 MouseUp の直後に自動で確定するが、その MouseUp は
+            // Handles.PositionHandle が既に消費している。自動フラッシュのタイミングに
+            // 頼らず、この場で差分を確定させる
+            Undo.FlushUndoRecordObjects();
+
+            // 直後の無関係な操作がこのグループへ入り込まないように閉じる
+            Undo.IncrementCurrentGroup();
 
             // 確定したので、プレビューはコンポーネントの内容を読むようになる
             LiveEdits.Clear();
@@ -1260,8 +1359,14 @@ namespace Dennokoworks.DenMeshEditor.Editor
             if (EditorGUI.EndChangeCheck())
             {
                 // スライダーのドラッグは毎フレーム変更を出すので、
-                // 最初の変更時のグループ番号を覚えておき、離したときに 1 段へまとめる
-                if (_settingsUndoGroup < 0) _settingsUndoGroup = Undo.GetCurrentGroup();
+                // 最初の変更時のグループ番号を覚えておき、離したときに 1 段へまとめる。
+                // ここでグループを切らないと、連続した設定変更どうしが 1 段に潰れる
+                if (_settingsUndoGroup < 0)
+                {
+                    Undo.IncrementCurrentGroup();
+                    _settingsUndoGroup = Undo.GetCurrentGroup();
+                    Undo.SetCurrentGroupName("Den Mesh Editor Settings");
+                }
 
                 Undo.RecordObject(_component, "Den Mesh Editor Settings");
                 _hasPendingRadius = false;

@@ -469,7 +469,45 @@ class DenMeshEditorPreviewFilter : IRenderFilter
 
 `GatherEdits` は各 `MeshEdit` について「未確定データがあればそちらを優先」する。確定時に `LiveEdits.Clear()` するため、同じ結果へ滑らかに引き継がれる。
 
-副次的な利点として、**1 ドラッグ＝ Undo 1 段**になる（`Undo.RecordObject` と書き換えが同一フレームで完結するため、`CollapseUndoOperations` が不要）。
+#### Undo の粒度：ハンドルを掴んで動かす 1 動作 = 1 段
+
+書き込みがマウスを離したときの 1 回だけになったことで、`Undo.RecordObject` と書き換えが同一フレームで完結する。`CollapseUndoOperations` でドラッグ中の記録をまとめる必要はない。
+
+ただし**それだけでは足りない。**Unity は同じ Undo グループに入った `RecordObject` を 1 段にまとめるため、グループを切らないと**複数回のドラッグが 1 段に潰れ**、Ctrl+Z で一気に巻き戻る。グループが自動で進むのは限られたタイミングだけで、シーンビュー上の独自ドラッグでは進まない。
+
+そこで確定処理を次の形にする。
+
+```csharp
+Undo.IncrementCurrentGroup();               // 直前の操作と切り離す
+Undo.SetCurrentGroupName("Den Mesh Editor");
+
+Undo.RecordObject(_component, "Den Mesh Editor");
+… 半径とデルタを書き込む …
+EditorUtility.SetDirty(_component);
+
+Undo.FlushUndoRecordObjects();              // 差分をこの場で確定
+Undo.IncrementCurrentGroup();               // 後続の無関係な操作を混入させない
+```
+
+- **`FlushUndoRecordObjects`** — `RecordObject` の差分は通常 MouseUp 直後に自動確定するが、その MouseUp は `Handles.PositionHandle` が既に消費している。自動フラッシュのタイミングに頼らない
+- **空の段を作らない** — 書き込むものが無ければグループを切らずに抜ける。空の段が積まれると、Ctrl+Z を押しても何も起きないように見える
+- **オーバーレイの設定変更も同様** — スライダーのドラッグは毎フレーム変更を出すので `CollapseUndoOperations` で 1 段にまとめるが、その基準グループを取る前にも `IncrementCurrentGroup` が要る。これが無いと連続した設定変更どうしが潰れる
+
+Undo / Redo 後は `Undo.undoRedoPerformed` から `ResyncFromComponent` を呼び、作業状態（`Working` / `Snapshot`）をコンポーネントの現在値から作り直す。これを怠ると、巻き戻ったコンポーネントに古い作業状態が残り、次のドラッグの確定で「取り消したはずの編集」を書き戻してしまう。
+
+#### Undo でハンドル位置も戻す
+
+作業状態を戻すだけでは、**移動ハンドルがドラッグ後の位置に取り残される。**しかし `WorldVertices` から取り直すこともできない — Undo 直後の時点では NDMF のプレビューメッシュがまだ巻き戻っておらず（パイプライン再構築は非同期）、古い形状を読んでしまうため。
+
+そこで**プレビューを読まずにハンドル位置を決められる形**にしておく。ハンドル位置は常に次で表せる。
+
+```
+handlePosition = baseWorld + skin · delta
+```
+
+`baseWorld` は選択頂点の「自分のデルタを除いた」ワールド位置、`skin` は選択時のスキニング行列。どちらも Undo では変化しない（Undo が変えるのはデルタだけ）ので、選択時に控えておけば、巻き戻ったデルタを入れるだけで正しい位置が出る。
+
+もう一点、**選択そのものが落ちる**経路がある。Undo は `List<MeshEdit>` をシリアライズ経由で復元するため `MeshEdit` のインスタンスが差し替わることがあり、そうなると `SyncTargetList` が参照比較で不一致を検出して対象を作り直し、`ClearSelection` を呼ぶ。Undo で変わるのはデルタだけで「どの頂点を掴んでいるか」は変わらないので、(Renderer, 頂点番号) を控えておいて選び直す。
 
 **フィルタ順序**：Scale Adjuster より後に評価される必要がある。NDMF パスの宣言で `.AfterPlugin("nadena.dev.modular-avatar")` 等により順序を明示する。
 
