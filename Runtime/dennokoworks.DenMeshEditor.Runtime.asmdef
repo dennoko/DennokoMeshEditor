@@ -1,0 +1,22 @@
+{
+    "name": "dennokoworks.DenMeshEditor.Runtime",
+    "rootNamespace": "Dennokoworks.DenMeshEditor",
+    "references": [
+        "VRC.SDKBase"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.vrchat.base",
+            "expression": "",
+            "define": "DEN_MESH_EDITOR_VRCSDK"
+        }
+    ],
+    "noEngineReferences": false
+}

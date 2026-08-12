@@ -1,0 +1,26 @@
+{
+    "name": "dennokoworks.DenMeshEditor.Editor",
+    "rootNamespace": "Dennokoworks.DenMeshEditor.Editor",
+    "references": [
+        "dennokoworks.DenMeshEditor.Runtime",
+        "nadena.dev.ndmf",
+        "nadena.dev.ndmf.runtime"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "nadena.dev.ndmf",
+            "expression": "",
+            "define": "DEN_MESH_EDITOR_NDMF"
+        }
+    ],
+    "noEngineReferences": false
+}

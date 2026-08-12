@@ -303,7 +303,10 @@ internal static class ProxyRegistry
     static readonly Dictionary<Renderer, Renderer> _map = new();
 
     internal static void Report(Renderer original, Renderer proxy) => _map[original] = proxy;
-    internal static void Remove(Renderer original) => _map.Remove(original);
+
+    // 再構築では「新ノードの登録 → 旧ノードの Dispose」の順になることがあるので、
+    // 自分が登録したプロキシと一致する場合だけ消す
+    internal static void Remove(Renderer original, Renderer proxy) { ... }
 
     internal static bool TryGet(Renderer original, out Renderer proxy)
         => _map.TryGetValue(original, out proxy) && proxy != null;  // Unity の null チェック必須
@@ -313,12 +316,7 @@ internal static class ProxyRegistry
 public void OnFrame(Renderer original, Renderer proxy)
 {
     ProxyRegistry.Report(original, proxy);
-}
-
-public void Dispose()
-{
-    // パイプライン再構築でプロキシは破棄される。登録も外す
-    foreach (var original in _originals) ProxyRegistry.Remove(original);
+    // …併せて編集済みメッシュの差し込みもここで行う（→ 9.2.1）
 }
 ```
 
@@ -328,11 +326,38 @@ public void Dispose()
 
 **プレビュー無効／フィルタ未起動の場合：** `TryGet` が false を返す。この場合は元 Renderer の `sharedMesh` にフォールバックし、「他ツールの影響が反映されていません」と Inspector に警告表示する。編集自体は可能な状態を保つ。
 
+### 9.2.1 編集済みメッシュの差し込みは毎フレーム行う
+
+**`Instantiate` でプロキシに `sharedMesh` を設定しても表示には反映されない。**
+
+`ProxyPipeline.OnFrame` はフレームごとに次の順で回る（`ProxyPipeline.cs:363-397`）。
+
+```
+1. すべての proxy に対して ProxyObjectController.OnPreFrame()
+2. すべての node に対して NodeController.OnFrame() → IRenderFilterNode.OnFrame()
+3. すべての proxy に対して ProxyObjectController.FinishPreFrame()
+```
+
+問題は 1 で、`ProxyObjectController.OnPreFrame` は無条件に
+
+```csharp
+replacementSMR.sharedMesh = smr_.sharedMesh;   // ProxyObjectController.cs:189
+replacementSMR.bones      = smr_.bones;
+```
+
+を実行し、プロキシのメッシュを**元 Renderer のものへ戻す**。`Instantiate` 時の代入は描画される前に必ず上書きされる。
+
+したがって **メッシュの生成は `Instantiate`（または初回の `OnFrame`）で 1 度だけ行い、プロキシへの代入は毎フレーム `OnFrame` で行う。** これは NDMF の他ツールでも同じで、Avatar Optimizer（`AAORenderFilterBase.cs:134`）も Modular Avatar（`RemoveVertexColorPreview.cs:105`）も `OnFrame` で `sharedMesh` を代入し直している。
+
+`IRenderFilterNode.OnFrame` の XML ドキュメントには「generally, you should not modify the mesh or materials in this method」とあるが、これは**内容の作り直し**を毎フレームやるなという意味であり、既に生成済みのメッシュを差し込む代入は必要な処理である。
+
+**上流メッシュの再取得：** 自分の `OnFrame` が呼ばれる時点でプロキシの `sharedMesh` は「1 でリセットされ、2 の上流ノードが適用済み」の状態、つまり**上流の出力そのもの**になっている。これをデルタ加算の基準（ベース）として保持し、インスタンスが変わったときだけ取り直す。
+
 #### 自分の編集分の二重適用について
 
-我々のフィルタは `Instantiate` でデルタを適用済みのメッシュをプロキシに設定する。したがって `OnFrame` で受け取るプロキシの形状は **ベース + 自分のデルタ** になっている。
+`OnFrame` で受け取るプロキシの `sharedMesh` は上流の出力であり、**自分のデルタは載っていない**（毎フレームリセットされるため）。よってベースにデルタを加算する処理は常に 1 回だけ効き、二重適用は起きない。
 
-これは表示・ピッキングにとっては**正しい状態**（現在の編集結果そのもの）。新しいドラッグは既存デルタへの増分として加算されるため、ベース形状を別途保持する必要はなく、二重適用も起きない。
+一方、シーンビュー編集ツールが `ProxyRegistry` 経由で読む形状は、自分の `OnFrame` が代入した後の状態、つまり **ベース + 自分のデルタ** になる。これは表示・ピッキングにとって正しい（現在の編集結果そのもの）。新しいドラッグは既存デルタへの増分として加算される。
 
 #### 補足：MA Scale Adjuster の挙動
 
@@ -390,11 +415,27 @@ class DenMeshEditorPreviewFilter : IRenderFilter
 ```
 
 - `GetTargetGroups` では `context.GetComponentsByType<DenMeshEditor>()` で対象を収集する
-- `Instantiate` では渡されたプロキシの `sharedMesh` を複製し、デルタを加算した新規 Mesh を設定する
+- メッシュの生成（複製 + デルタ加算）とプロキシへの代入は **`OnFrame` で行う**（理由は 9.2.1）
   - **新規インスタンスを作ること。**`IRenderFilter` の規約であり、`Dispose` で破棄する責任も負う
+  - 生成は世代番号が変わったときだけ。毎フレーム作り直してはいけない
 - 編集値の変更を検知させるため、`context.Observe(component, ...)` でコンポーネントを監視する
 - ノードの `WhatChanged` は `RenderAspects.Mesh` を返す
 - フィルタは NDMF パスに `.PreviewingWith(new DenMeshEditorPreviewFilter())` で登録する
+
+#### ドラッグ中の反映：コンポーネントを書き換えない
+
+`Observe(component)` による無効化は `ObjectChangeEvents` 経由であり、**コンポーネントを dirty にするとプレビューパイプライン全体が再構築される**。ドラッグ中に毎フレーム `Undo.RecordObject` + `SetDirty` を行うと、フレームごとにメッシュ複製が走って実用にならない。
+
+そこで書き込みを 2 経路に分ける。
+
+| タイミング | 書き込み先 | プレビューの更新契機 |
+| --- | --- | --- |
+| ドラッグ中（毎フレーム） | `LiveEdits`（Editor 内の静的な一時領域） | 世代番号 `LiveEdits.Version` の変化 |
+| マウスを離したとき（1 回） | コンポーネント（`Undo.RecordObject` → `SetFrom` → `SetDirty`） | NDMF のパイプライン再構築 |
+
+`GatherEdits` は各 `MeshEdit` について「未確定データがあればそちらを優先」する。確定時に `LiveEdits.Clear()` するため、同じ結果へ滑らかに引き継がれる。
+
+副次的な利点として、**1 ドラッグ＝ Undo 1 段**になる（`Undo.RecordObject` と書き換えが同一フレームで完結するため、`CollapseUndoOperations` が不要）。
 
 **フィルタ順序**：Scale Adjuster より後に評価される必要がある。NDMF パスの宣言で `.AfterPlugin("nadena.dev.modular-avatar")` 等により順序を明示する。
 
@@ -459,15 +500,57 @@ NDMF プラグインとして **`BuildPhase.Transforming` フェーズ**で処�
 
 ---
 
-## 13. 残課題
+## 13. 実装状況
 
-設計上の大枠は確定。以下は実装時のチューニング項目。
+初版実装済み。Roslyn による型チェックは通過済み（警告レベル 4 でゼロ警告）。**Unity 上での実動作は未検証。**
 
-1. **中心線 ε の既定値** — ミラー適用をスキップする閾値（5.2）。アバターのスケールに対する相対値にするか絶対値にするか
-2. **減衰カーブのプリセット選定** — 何種類用意するか。Blender 相当の全種は不要
-3. **空間分割グリッドのセルサイズ** — 影響半径に対する比率で自動決定するのが妥当か
-4. **フィルタ順序の指定方法** — `.AfterPlugin` で MA を名指しするか、`.BeforePlugin` で AAO を指定するか、両方か
-5. **頂点順序変更の検知精度** — `vertexCount` 照合のみで足りるか、ベース頂点座標のハッシュも保存するか
+### ファイル構成
+
+```
+Runtime/
+  DenMeshEditor.cs              … コンポーネント、MeshEdit、FalloffType、MirrorAxis
+Editor/
+  ProxyRegistry.cs              … プロキシ Renderer の受け渡し
+  LiveEdits.cs                  … ドラッグ中の未確定デルタの受け渡し（→ 9.4）
+  MeshDeltaApplier.cs           … デルタ適用の共通ロジック
+  DenMeshEditorPreviewFilter.cs … IRenderFilter / IRenderFilterNode
+  DenMeshEditorPlugin.cs        … NDMF ビルドパス
+  EditSession.cs                … シーンビュー編集
+  FalloffUtil.cs                … 減衰カーブ
+  DenMeshEditorInspector.cs     … Inspector UI
+  DenMeshEditorBaker.cs         … ベイク
+```
+
+### 実装で確定した項目
+
+| 項目 | 決定 |
+| --- | --- |
+| 中心線 ε | `max(1e-4, brushRadius * 0.05)`。半径への相対値とし、ブラシサイズに追従させた |
+| 減衰プリセット | スムーズ（smoothstep）／直線／シャープ（二乗）／一定 の 4 種 |
+| 空間分割グリッド | **不要と判断し実装しない。** 影響頂点の探索は選択時の 1 回だけで、O(V) の総当たりで十分速い。ドラッグ中は選択時にキャッシュした重みを使うだけなので探索が発生しない |
+| フィルタ順序 | `.AfterPlugin("nadena.dev.modular-avatar")` のみ。AAO はフェーズが後（Optimizing）なので指定不要。`AfterPlugin` は `WeakOrder` 制約かつ名前ベースの placeholder を使うため、MA 未導入でもエラーにならない |
+| 頂点順序変更の検知 | `vertexCount` 照合のみ。記録するのは**プロキシの頂点数**とする（元メッシュの頂点数を記録すると、上流で頂点数が変わった場合にチェックを素通りして誤った頂点が動く） |
+
+### 設計からの差分
+
+- **矩形選択は未実装。** クリック選択のみ。操作モデル (C, r, f, D) はクリック選択で完結するため、機能上の欠落にはならない
+- ドラッグ確定後の再スナップショットは、プレビュー再構築の完了を待たずに「ハンドルの現在位置」を次の基準にする。プレビュー更新が非同期であることにタイミング依存しないための措置
+
+### 修正履歴
+
+**プレビューにメッシュ変形が反映されない不具合（初版）**
+
+初版は `IRenderFilter.Instantiate` の中でプロキシの `sharedMesh` を編集済みメッシュへ差し替えていた。しかし `ProxyObjectController.OnPreFrame` がフレーム冒頭で `sharedMesh` を元 Renderer のものへ戻すため、この代入は描画前に必ず破棄されていた（詳細と修正方針は 9.2.1）。
+
+併せて、ドラッグ中の毎フレーム `SetDirty` によるパイプライン再構築を廃止し、未確定デルタは `LiveEdits` 経由で渡す構成に変更した（→ 9.4）。
+
+### 未検証項目（Unity 上で確認が必要）
+
+1. Scale Adjuster 適用下で、シーンビューの頂点位置がスケール調整に追従すること
+2. スキニング行列の逆変換により、ドラッグ量とメッシュの動きが一致すること（ボーンにスケールがかかった部位で特に）
+3. ドラッグ中のフレームレート（`Mesh.SetVertices` によるフルアップロードが毎フレーム走る）
+
+1 が想定通りに動かない場合は、記事のリフレクション手法（`PreviewSession.OriginalToProxyRenderer`）が**実測で動作確認済みの代替手段**として使える。その場合は `ProxyRegistry` の内部実装のみを差し替えればよく、シーンビュー側のコードは変更不要 — レジストリを挟む構成にしておいた理由の一つ。
 
 ### NDMF バージョン追従方針
 
@@ -476,12 +559,20 @@ NDMF プラグインとして **`BuildPhase.Transforming` フェーズ**で処�
 - **サポート範囲を明示する。** `package.json` の依存に下限を書く。`IRenderFilter` の現行シグネチャが導入されたバージョンを特定する必要がある（開発時の検証は 1.11.0）
 - **NDMF 更新時の回帰確認**は、Scale Adjuster を適用したアバターで、シーンビュー上の頂点位置がスケール調整に追従するかを見れば足りる
 
-### 実装初期に検証すべきこと
+### 型チェックの再実行
 
-本設計は NDMF 1.11.0 のソース読解に基づく。実装の最初のステップとして、**プッシュ型でプロキシが取得できることを最小構成で確認する**こと。
+Unity エディタを起動したままでも、Roslyn で型チェックだけを回せる（Library をロックしない）。
 
-1. `DenMeshEditor` コンポーネントを持つ Renderer に対して `IRenderFilter` を登録する
-2. `IRenderFilterNode.OnFrame` にログを仕込み、毎フレーム呼ばれること・`proxy` が非 null であることを確認する
-3. Scale Adjuster を適用したアバターで `proxy` から頂点位置を取り、スケール調整が反映されていることを確認する
+```bash
+U="C:/Program Files/Unity/Hub/Editor/2022.3.22f1/Editor/Data"
+dotnet "$U/DotNetSdkRoslyn/csc.dll" -noconfig "@build.rsp"
+```
 
-ここで想定通りに動かない場合は、記事のリフレクション手法（`PreviewSession.OriginalToProxyRenderer`）が**実測で動作確認済みの代替手段**として使える。その場合は `ProxyRegistry` の内部実装のみをリフレクションに差し替えればよく、シーンビュー側のコードは変更不要になる — レジストリを挟む構成にしておく理由の一つ。
+参照が必要なもの：
+
+- `$U/Managed/UnityEngine/*.dll`（ただし monolithic な `UnityEditor.dll` は型が重複するため除外）
+- `$U/MonoBleedingEdge/lib/mono/unityjit-win32/` の `mscorlib` / `System` / `System.Core` / `Facades/netstandard.dll`
+- `Packages/com.vrchat.base/Runtime/VRCSDK/Dependencies/Managed/System.Collections.Immutable.dll`
+  （NDMF は v7 を要求する。Mono 同梱の v1.2.3 では `CS1705` になる）
+- `Packages/com.vrchat.base/Runtime/VRCSDK/Plugins/VRCSDKBase.dll`（`IEditorOnly` 用）
+- `Library/ScriptAssemblies/nadena.dev.ndmf.dll` / `nadena.dev.ndmf.runtime.dll`
