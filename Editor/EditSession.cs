@@ -21,6 +21,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private const float RefreshIntervalSeconds = 0.1f;
         private const int MaxDrawnVertices = 3000;
 
+        /// <summary>クリック位置に近い順に、最大でいくつまで遮蔽判定を試すか。</summary>
+        private const int MaxPickCandidates = 8;
+
         internal const float MinBrushRadius = 0.001f;
         internal const float MaxBrushRadius = 0.5f;
 
@@ -71,6 +74,14 @@ namespace Dennokoworks.DenMeshEditor.Editor
             public Vector3[] WorldVertices;
             public MeshEdit Edit;
 
+            /// <summary>遮蔽判定用のインデックス配列。メッシュが変わったときだけ取り直す。</summary>
+            public int[] Triangles;
+
+            // ピック時に計算し直す視点依存のキャッシュ
+            public Vector2[] ScreenPositions;
+            public float[] ViewDepths;
+            public bool[] InFront;
+
             public Transform[] Bones;
             public Matrix4x4[] BindPoses;
             public BoneWeight[] BoneWeights;
@@ -89,9 +100,26 @@ namespace Dennokoworks.DenMeshEditor.Editor
             public Matrix4x4 InverseSkin;
         }
 
+        /// <summary>クリック位置に近い頂点の候補。近い順に並べる。</summary>
+        private struct Candidate
+        {
+            public TargetState Target;
+            public int Index;
+            public float ScreenDistanceSq;
+        }
+
+        /// <summary>遮蔽判定の対象になりうる三角形への参照。</summary>
+        private struct TriangleRef
+        {
+            public TargetState Target;
+            public int Start;
+        }
+
         private readonly DenMeshEditor _component;
         private readonly List<TargetState> _targets = new List<TargetState>();
         private readonly List<Influence> _influences = new List<Influence>();
+        private readonly List<Candidate> _candidates = new List<Candidate>();
+        private readonly List<TriangleRef> _nearbyTriangles = new List<TriangleRef>();
 
         private double _lastRefresh;
         private bool _hasSelection;
@@ -137,6 +165,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             _targets.Clear();
             _influences.Clear();
+            _candidates.Clear();
+            _nearbyTriangles.Clear();
         }
 
         // ------------------------------------------------------------------
@@ -172,6 +202,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
                     target.Mesh = mesh;
                     target.BindPoses = mesh != null ? mesh.bindposes : null;
                     target.BoneWeights = mesh != null ? mesh.boneWeights : null;
+
+                    // 遮蔽判定に使う。トポロジは変わらないが、プレビュー用メッシュは
+                    // パイプライン再構築のたびに別インスタンスになるので取り直す
+                    target.Triangles = mesh != null ? mesh.triangles : null;
                 }
 
                 // Scale Adjuster などがシャドウボーンを差し替えることがあるので毎回読み直す
@@ -414,6 +448,17 @@ namespace Dennokoworks.DenMeshEditor.Editor
             }
         }
 
+        /// <summary>
+        /// クリック位置に最も近い「見えている」頂点を選ぶ。
+        ///
+        /// 手順は 3 段階。
+        ///   1. 全頂点のスクリーン座標・視線方向の深度を計算する
+        ///   2. クリック位置から一定距離内の頂点を、近い順に候補として集める
+        ///   3. 近い順に遮蔽判定を行い、最初に「遮蔽されていない」ものを返す
+        ///
+        /// 遮蔽判定は編集対象メッシュの三角形に対するレイ交差で行う。手前の候補が
+        /// 見えていれば 1 回で確定するため、通常のコストは 1 回分しかかからない。
+        /// </summary>
         private bool TryPick(Vector2 mousePosition, out TargetState picked, out int pickedIndex)
         {
             picked = null;
@@ -424,30 +469,231 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             var cameraPosition = camera.transform.position;
             var cameraForward = camera.transform.forward;
-            var best = PickThresholdPixels * PickThresholdPixels;
 
+            UpdateScreenCache(cameraPosition, cameraForward);
+            CollectCandidates(mousePosition);
+            if (_candidates.Count == 0) return false;
+
+            CollectNearbyTriangles(mousePosition);
+
+            foreach (var candidate in _candidates)
+            {
+                if (IsOccluded(candidate.Target, candidate.Index, cameraPosition)) continue;
+
+                picked = candidate.Target;
+                pickedIndex = candidate.Index;
+                return true;
+            }
+
+            return false;
+        }
+
+        private void UpdateScreenCache(Vector3 cameraPosition, Vector3 cameraForward)
+        {
             foreach (var target in _targets)
             {
                 var vertices = target.WorldVertices;
-                if (vertices == null) continue;
+                if (vertices == null)
+                {
+                    target.ScreenPositions = null;
+                    continue;
+                }
+
+                if (target.ScreenPositions == null || target.ScreenPositions.Length != vertices.Length)
+                {
+                    target.ScreenPositions = new Vector2[vertices.Length];
+                    target.ViewDepths = new float[vertices.Length];
+                    target.InFront = new bool[vertices.Length];
+                }
 
                 for (var i = 0; i < vertices.Length; i++)
                 {
                     var world = vertices[i];
 
-                    // カメラ後方の頂点は除外
-                    if (Vector3.Dot(world - cameraPosition, cameraForward) <= 0f) continue;
+                    // 視線方向の深度。カメラからの直線距離ではなく射影を使う。
+                    // 射影は線形なので、三角形の 3 頂点の値から面全体を保守的に判定できる
+                    var depth = Vector3.Dot(world - cameraPosition, cameraForward);
+                    target.ViewDepths[i] = depth;
+                    target.InFront[i] = depth > 0f;
+                    target.ScreenPositions[i] = depth > 0f ? HandleUtility.WorldToGUIPoint(world) : Vector2.zero;
+                }
+            }
+        }
 
-                    var distance = (HandleUtility.WorldToGUIPoint(world) - mousePosition).sqrMagnitude;
-                    if (distance >= best) continue;
+        private void CollectCandidates(Vector2 mousePosition)
+        {
+            _candidates.Clear();
 
-                    best = distance;
-                    picked = target;
-                    pickedIndex = i;
+            var threshold = PickThresholdPixels * PickThresholdPixels;
+
+            foreach (var target in _targets)
+            {
+                var positions = target.ScreenPositions;
+                if (positions == null) continue;
+
+                for (var i = 0; i < positions.Length; i++)
+                {
+                    if (!target.InFront[i]) continue;
+
+                    var distance = (positions[i] - mousePosition).sqrMagnitude;
+                    if (distance >= threshold) continue;
+
+                    InsertCandidate(target, i, distance);
+                }
+            }
+        }
+
+        /// <summary>近い順を保ったまま、上位 <see cref="MaxPickCandidates"/> 件だけ保持する。</summary>
+        private void InsertCandidate(TargetState target, int index, float distance)
+        {
+            var insertAt = _candidates.Count;
+            for (var i = 0; i < _candidates.Count; i++)
+            {
+                if (distance >= _candidates[i].ScreenDistanceSq) continue;
+                insertAt = i;
+                break;
+            }
+
+            if (insertAt >= MaxPickCandidates) return;
+
+            _candidates.Insert(insertAt, new Candidate
+            {
+                Target = target,
+                Index = index,
+                ScreenDistanceSq = distance,
+            });
+
+            if (_candidates.Count > MaxPickCandidates) _candidates.RemoveAt(_candidates.Count - 1);
+        }
+
+        /// <summary>
+        /// 遮蔽しうる三角形をあらかじめ絞り込む。候補はすべてクリック位置から
+        /// <see cref="PickThresholdPixels"/> 以内にあるので、スクリーン上の外接矩形を
+        /// その分だけ広げて判定すれば、どの候補に対しても取りこぼしがない。
+        ///
+        /// 候補ごとに全三角形を走査すると候補数に比例して重くなるため、ここで 1 回だけ行う。
+        /// </summary>
+        private void CollectNearbyTriangles(Vector2 mousePosition)
+        {
+            _nearbyTriangles.Clear();
+
+            foreach (var target in _targets)
+            {
+                var triangles = target.Triangles;
+                var positions = target.ScreenPositions;
+                if (triangles == null || positions == null) continue;
+
+                var inFront = target.InFront;
+                var count = positions.Length;
+
+                for (var t = 0; t + 2 < triangles.Length; t += 3)
+                {
+                    int a = triangles[t], b = triangles[t + 1], c = triangles[t + 2];
+                    if (a >= count || b >= count || c >= count) continue;
+
+                    if (inFront[a] && inFront[b] && inFront[c])
+                    {
+                        if (!ScreenBoundsContain(positions[a], positions[b], positions[c],
+                                mousePosition, PickThresholdPixels))
+                        {
+                            continue;
+                        }
+                    }
+                    else if (!inFront[a] && !inFront[b] && !inFront[c])
+                    {
+                        // 完全にカメラ後方。遮蔽しえない
+                        continue;
+                    }
+
+                    // カメラ面をまたぐ三角形はスクリーン座標が信用できないので絞り込まず残す
+
+                    _nearbyTriangles.Add(new TriangleRef { Target = target, Start = t });
+                }
+            }
+        }
+
+        private static bool ScreenBoundsContain(Vector2 a, Vector2 b, Vector2 c, Vector2 point, float margin)
+        {
+            if (point.x < Mathf.Min(a.x, Mathf.Min(b.x, c.x)) - margin) return false;
+            if (point.x > Mathf.Max(a.x, Mathf.Max(b.x, c.x)) + margin) return false;
+            if (point.y < Mathf.Min(a.y, Mathf.Min(b.y, c.y)) - margin) return false;
+            if (point.y > Mathf.Max(a.y, Mathf.Max(b.y, c.y)) + margin) return false;
+            return true;
+        }
+
+        /// <summary>
+        /// カメラから頂点へのレイが、途中で他の面に遮られているかを判定する。
+        /// </summary>
+        private bool IsOccluded(TargetState owner, int index, Vector3 cameraPosition)
+        {
+            var vertex = owner.WorldVertices[index];
+            var toVertex = vertex - cameraPosition;
+            var distance = toVertex.magnitude;
+            if (distance <= 1e-6f) return false;
+
+            var direction = toVertex / distance;
+
+            // 頂点自身が乗っている面や、ごく手前の面を遮蔽と誤判定しないための余裕。
+            // これが無いと、隣接三角形との交差で常に「遮蔽されている」と判定されてしまう
+            var slack = Mathf.Max(1e-4f, distance * 0.003f);
+            var limit = distance - slack;
+            if (limit <= 0f) return false;
+
+            var depthLimit = owner.ViewDepths[index] - slack;
+
+            foreach (var reference in _nearbyTriangles)
+            {
+                var target = reference.Target;
+                var vertices = target.WorldVertices;
+                var depths = target.ViewDepths;
+                var triangles = target.Triangles;
+
+                int a = triangles[reference.Start], b = triangles[reference.Start + 1],
+                    c = triangles[reference.Start + 2];
+
+                // 3 頂点とも対象頂点より奥にある三角形は、深度が線形なので面全体も奥にある
+                if (depths[a] >= depthLimit && depths[b] >= depthLimit && depths[c] >= depthLimit) continue;
+
+                if (RayTriangle(cameraPosition, direction, vertices[a], vertices[b], vertices[c], out var hit) &&
+                    hit < limit)
+                {
+                    return true;
                 }
             }
 
-            return picked != null;
+            return false;
+        }
+
+        /// <summary>
+        /// Möller–Trumbore によるレイと三角形の交差判定。
+        /// 裏面も交差として扱う（両面表示のマテリアルでも遮蔽として正しく働かせるため）。
+        /// </summary>
+        private static bool RayTriangle(Vector3 origin, Vector3 direction, Vector3 a, Vector3 b, Vector3 c,
+            out float distance)
+        {
+            distance = 0f;
+
+            var edge1 = b - a;
+            var edge2 = c - a;
+
+            var p = Vector3.Cross(direction, edge2);
+            var determinant = Vector3.Dot(edge1, p);
+
+            // 視線と平行、あるいは面積ゼロの三角形
+            if (Mathf.Abs(determinant) < 1e-12f) return false;
+
+            var inverse = 1f / determinant;
+            var s = origin - a;
+
+            var u = Vector3.Dot(s, p) * inverse;
+            if (u < 0f || u > 1f) return false;
+
+            var q = Vector3.Cross(s, edge1);
+            var v = Vector3.Dot(direction, q) * inverse;
+            if (v < 0f || u + v > 1f) return false;
+
+            distance = Vector3.Dot(edge2, q) * inverse;
+            return distance > 0f;
         }
 
         private void BeginSelection(TargetState target, int index)
