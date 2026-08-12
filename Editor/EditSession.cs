@@ -21,6 +21,13 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private const float RefreshIntervalSeconds = 0.1f;
         private const int MaxDrawnVertices = 3000;
 
+        internal const float MinBrushRadius = 0.001f;
+        internal const float MaxBrushRadius = 0.5f;
+
+        /// <summary>ホイール 1 目盛りあたりの半径の倍率。加算ではなく乗算にすることで、
+        /// 半径が小さいときは細かく、大きいときは粗く変化させる。</summary>
+        private const float RadiusScrollStep = 1.05f;
+
         private static EditSession _active;
 
         internal static EditSession Active => _active;
@@ -96,12 +103,21 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private Vector3 _handlePosition;
         private bool _dragging;
 
+        // ドラッグ中にホイールで変更した半径。確定するまでコンポーネントには書かない
+        private float _pendingRadius;
+        private bool _hasPendingRadius;
+
         private TargetState _hoverTarget;
         private int _hoverIndex = -1;
 
         private Rect _overlayRect;
 
         internal bool AnyFallback { get; private set; }
+
+        /// <summary>
+        /// 現在有効なブラシ半径。ドラッグ中にホイールで変更した未確定値を優先する。
+        /// </summary>
+        private float BrushRadius => _hasPendingRadius ? _pendingRadius : _component.brushRadius;
 
         private EditSession(DenMeshEditor component)
         {
@@ -363,6 +379,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             DrawOverlay();
             HandleSelection(current, defaultControl);
+            HandleRadiusScroll(current);
             HandleDrag(current);
             DrawGizmos();
 
@@ -455,7 +472,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             var centerInRoot = root.worldToLocalMatrix.MultiplyPoint3x4(_centerWorld);
 
             // 中心線のごく近くではミラー適用をスキップする（影響球の重なりによる二重適用を避ける）
-            var epsilon = Mathf.Max(1e-4f, _component.brushRadius * 0.05f);
+            var epsilon = Mathf.Max(1e-4f, BrushRadius * 0.05f);
             if (Mathf.Abs(AxisComponent(centerInRoot, _component.mirrorAxis)) < epsilon) return;
 
             _mirrorActive = true;
@@ -467,7 +484,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
         {
             _influences.Clear();
 
-            var radius = Mathf.Max(1e-5f, _component.brushRadius);
+            var radius = Mathf.Max(1e-5f, BrushRadius);
             var falloff = _component.falloff;
 
             foreach (var target in _targets)
@@ -512,6 +529,11 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
         private void ClearSelection()
         {
+            // ドラッグ中に Esc で解除されうる。ここで降ろさないと _dragging が立ちっぱなしになり、
+            // 頂点位置の更新（Refresh）が二度と走らなくなる
+            _dragging = false;
+            _hasPendingRadius = false;
+
             _hasSelection = false;
             _mirrorActive = false;
             _selectedTarget = null;
@@ -519,6 +541,37 @@ namespace Dennokoworks.DenMeshEditor.Editor
             _influences.Clear();
             _hoverTarget = null;
             _hoverIndex = -1;
+        }
+
+        /// <summary>
+        /// ドラッグ中のホイール操作でブラシ半径を変更する。
+        ///
+        /// 影響範囲の再計算に使う頂点位置（<see cref="TargetState.WorldVertices"/>）は
+        /// ドラッグ中は更新されない＝ドラッグ開始時の形状のままなので、
+        /// 選択時と同じ基準で影響範囲を計算し直せる。
+        ///
+        /// 半径を縮めた場合、範囲から外れた頂点は <see cref="ApplyDisplacement"/> が
+        /// スナップショットから作り直すことで元に戻る。
+        /// </summary>
+        private void HandleRadiusScroll(Event current)
+        {
+            // ドラッグ中のみ横取りする。それ以外ではシーンビューのズームを妨げない
+            if (!_dragging || !_hasSelection) return;
+            if (current.type != EventType.ScrollWheel) return;
+
+            // ホイール上方向で delta.y が負になる。上で拡大、下で縮小
+            var notches = Mathf.Clamp(current.delta.y, -10f, 10f);
+            _pendingRadius = Mathf.Clamp(
+                BrushRadius * Mathf.Pow(RadiusScrollStep, -notches),
+                MinBrushRadius, MaxBrushRadius);
+            _hasPendingRadius = true;
+
+            RecomputeMirrorCenter();
+            BuildInfluences();
+            ApplyDisplacement();
+
+            // シーンビューのズームへ渡さない
+            current.Use();
         }
 
         private void HandleDrag(Event current)
@@ -552,7 +605,14 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// </summary>
         private void Commit()
         {
+            // 記録より先に半径を書くと変更前の値が取れなくなるので、記録が先
             Undo.RecordObject(_component, "Den Mesh Editor");
+
+            if (_hasPendingRadius)
+            {
+                _component.brushRadius = _pendingRadius;
+                _hasPendingRadius = false;
+            }
 
             foreach (var target in _targets)
             {
@@ -663,7 +723,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             if (camera == null) return;
 
             Handles.color = color;
-            Handles.DrawWireDisc(center, camera.transform.forward, _component.brushRadius);
+            Handles.DrawWireDisc(center, camera.transform.forward, BrushRadius);
         }
 
         private void DrawOverlay()
@@ -679,12 +739,14 @@ namespace Dennokoworks.DenMeshEditor.Editor
             GUILayout.Label("Den Mesh Editor — 編集中", EditorStyles.boldLabel);
 
             EditorGUI.BeginChangeCheck();
-            var radius = EditorGUILayout.Slider("半径", _component.brushRadius, 0.001f, 0.5f);
+            // ドラッグ中にホイールで変えた未確定の半径もそのまま表示する
+            var radius = EditorGUILayout.Slider("半径", BrushRadius, MinBrushRadius, MaxBrushRadius);
             var falloff = (FalloffType)EditorGUILayout.EnumPopup("減衰", _component.falloff);
             var mirror = EditorGUILayout.Toggle("ミラー", _component.mirror);
             if (EditorGUI.EndChangeCheck())
             {
                 Undo.RecordObject(_component, "Den Mesh Editor Settings");
+                _hasPendingRadius = false;
                 _component.brushRadius = radius;
                 _component.falloff = falloff;
                 _component.mirror = mirror;
