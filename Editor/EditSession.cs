@@ -125,6 +125,19 @@ namespace Dennokoworks.DenMeshEditor.Editor
             SceneView.RepaintAll();
         }
 
+        internal static void NotifySettingsChanged()
+        {
+            if (_active == null) return;
+
+            if (_active._hasSelection)
+            {
+                _active.RecomputeMirrorCenter();
+                _active.BuildInfluences();
+            }
+
+            SceneView.RepaintAll();
+        }
+
         // ------------------------------------------------------------------
 
         private sealed class TargetState

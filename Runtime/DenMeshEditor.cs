@@ -98,19 +98,16 @@ namespace Dennokoworks.DenMeshEditor
         [Tooltip("編集対象の Renderer。複数指定できます。")]
         public List<MeshEdit> edits = new List<MeshEdit>();
 
-        [Header("ブラシ設定")]
         [Tooltip("プロポーショナル編集の影響半径（ワールド単位）。")]
         public float brushRadius = 0.03f;
 
         public FalloffType falloff = FalloffType.Smooth;
 
-        [Header("ミラー")]
         [Tooltip("有効な間に行った操作のみがミラーされます。")]
         public bool mirror;
 
         public MirrorAxis mirrorAxis = MirrorAxis.X;
 
-        [Header("ベイク")]
         [Tooltip("ON にすると、元の形状を保ったまま編集分をシェイプキーとして追加します。")]
         public bool bakeAsBlendShape;
 

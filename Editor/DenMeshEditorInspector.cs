@@ -210,11 +210,29 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
         private void DrawBrushSettings()
         {
-            EditorGUILayout.LabelField("ブラシ", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("ブラシ設定", EditorStyles.boldLabel);
             EditorGUILayout.PropertyField(_brushRadius, new GUIContent("半径", "プロポーショナル編集の影響半径（ワールド単位）"));
             EditorGUILayout.PropertyField(_falloff, new GUIContent("減衰"));
 
-            EditorGUILayout.PropertyField(_mirror, new GUIContent("ミラー", "有効な間に行った操作のみがミラーされます"));
+            EditorGUILayout.Space(2);
+
+            var mirrorActive = _mirror.boolValue;
+            var prevColor = GUI.backgroundColor;
+            if (mirrorActive)
+            {
+                GUI.backgroundColor = new Color(0.4f, 0.85f, 0.55f);
+            }
+
+            var buttonText = mirrorActive ? "ミラー: 有効 (ON)" : "ミラー: 無効 (OFF)";
+            if (GUILayout.Button(buttonText, GUILayout.Height(28)))
+            {
+                _mirror.boolValue = !mirrorActive;
+                serializedObject.ApplyModifiedProperties();
+                EditSession.NotifySettingsChanged();
+            }
+
+            GUI.backgroundColor = prevColor;
+
             using (new EditorGUI.DisabledScope(!_mirror.boolValue))
             {
                 EditorGUILayout.PropertyField(_mirrorAxis, new GUIContent("ミラー軸"));
