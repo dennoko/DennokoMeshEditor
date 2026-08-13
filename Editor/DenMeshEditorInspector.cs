@@ -86,7 +86,13 @@ namespace Dennokoworks.DenMeshEditor.Editor
             EditorGUILayout.Space();
             DrawBakeSection(component);
 
-            serializedObject.ApplyModifiedProperties();
+            // ミラー軸・半径・減衰は PropertyField 経由で書き換わるため、
+            // ここで拾わないと編集セッションが古い設定のまま描画を続ける
+            //（対象を選び直すまでミラー中心が更新されない）。
+            if (serializedObject.ApplyModifiedProperties() && EditSession.IsActive(component))
+            {
+                EditSession.NotifySettingsChanged();
+            }
         }
 
         // ------------------------------------------------------------------
@@ -245,7 +251,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             using (new EditorGUI.DisabledScope(!_mirror.boolValue))
             {
-                EditorGUILayout.PropertyField(_mirrorAxis, new GUIContent("ミラー軸"));
+                DrawMirrorAxisButtons();
             }
 
             if (_mirror.boolValue)
@@ -255,6 +261,42 @@ namespace Dennokoworks.DenMeshEditor.Editor
                     + "左右対称なトポロジは不要です。基準はアバタールートのローカル空間です。",
                     MessageType.None);
             }
+        }
+
+        private void DrawMirrorAxisButtons()
+        {
+            EditorGUILayout.LabelField("ミラー軸");
+            EditorGUILayout.BeginHorizontal();
+
+            var currentAxis = (MirrorAxis)_mirrorAxis.enumValueIndex;
+            var defaultColor = GUI.backgroundColor;
+            var selectedColor = new Color(0.35f, 0.7f, 1f);
+
+            var axes = new[]
+            {
+                (Axis: MirrorAxis.X, Label: "X 軸", Tooltip: "X 軸（左右対称）"),
+                (Axis: MirrorAxis.Y, Label: "Y 軸", Tooltip: "Y 軸（上下対称）"),
+                (Axis: MirrorAxis.Z, Label: "Z 軸", Tooltip: "Z 軸（前後対称）"),
+            };
+
+            foreach (var item in axes)
+            {
+                var isSelected = currentAxis == item.Axis;
+                GUI.backgroundColor = isSelected ? selectedColor : defaultColor;
+
+                if (GUILayout.Button(new GUIContent(item.Label, item.Tooltip), GUILayout.Height(26)))
+                {
+                    if (!isSelected)
+                    {
+                        _mirrorAxis.enumValueIndex = (int)item.Axis;
+                        serializedObject.ApplyModifiedProperties();
+                        EditSession.NotifySettingsChanged();
+                    }
+                }
+            }
+
+            GUI.backgroundColor = defaultColor;
+            EditorGUILayout.EndHorizontal();
         }
 
         // ------------------------------------------------------------------

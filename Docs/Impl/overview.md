@@ -779,6 +779,23 @@ Editor/
 
 追加依存ゼロで使える Job System（`Unity.Jobs` / `NativeArray` は `UnityEngine.CoreModule` に含まれる）は将来の選択肢として残るが、効くのは編集セッション中の応答性だけで、最重要要件である待機時・ロード時のコストには寄与しない。
 
+#### Inspector での設定変更がセッションへ届かない不具合
+
+ミラー軸を切り替えても、シーンビューのミラー中心（ピンクの円）が古い軸のまま更新されなかった。対象を選び直すと直る、という症状。
+
+原因は通知経路の欠落。オーバーレイのスライダーとミラーのトグルは、変更を検出した場所で `RecomputeMirrorCenter` / `BuildInfluences` を直接呼んでいたが、**Inspector の `PropertyField` 経由の変更にはその経路が無かった**。`ミラー軸` は Inspector にしか無いため、`serializedObject.ApplyModifiedProperties()` でコンポーネントの値だけが変わり、セッションが持つ `_mirrorCenterWorld` と `_influences` は選択時のまま取り残されていた（`BeginSelection` が両方を計算し直すので、選択のやり直しで直って見えた）。
+
+個々のフィールドに変更検出を足すのではなく、`OnInspectorGUI` の末尾で一括して拾う。
+
+```csharp
+if (serializedObject.ApplyModifiedProperties() && EditSession.IsActive(component))
+{
+    EditSession.NotifySettingsChanged();
+}
+```
+
+`ApplyModifiedProperties` は「実際に書き換わったか」を返すので、これで Inspector 由来の変更が漏れなく届く。半径・減衰など後から増えた設定にも自動で追従する。`NotifySettingsChanged` 側は選択が無ければ何もしないため、非選択時の空振りコストも無い。
+
 ### 未検証項目（Unity 上で確認が必要）
 
 1. Scale Adjuster 適用下で、シーンビューの頂点位置がスケール調整に追従すること
