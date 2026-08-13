@@ -318,7 +318,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private int _hoverIndex = -1;
 
         private Rect _overlayRect;
-        private static Vector2 _overlayPosition = new Vector2(10, 10);
+        private static Vector2 _overlayPosition = new Vector2(-1f, -1f);
         private static bool _overlayDragging;
         private static Vector2 _overlayDragOffset;
 
@@ -1790,14 +1790,19 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 return;
             }
 
-            DrawBrushCircle(_centerWorld, new Color(0.3f, 0.8f, 1f, 0.8f));
-            if (_mirrorActive) DrawBrushCircle(_mirrorCenterWorld, new Color(1f, 0.4f, 0.6f, 0.8f));
-
             // ドラッグ中、プレビューのメッシュは既に変形しているが WorldVertices は
             // ドラッグ開始時のままなので、同じ変位を足した位置へ描く。
             // これをしないと、動かした先の面にドットが埋もれて遮蔽判定で消えてしまう
             var displacement = _dragging ? _handlePosition - _centerWorld : Vector3.zero;
             var mirrorDisplacement = _dragging ? MirrorDisplacement(displacement) : Vector3.zero;
+
+            // 円もハンドルと一緒に動かす。中心の頂点は変位をそのまま受け取る（重み 1）ので、
+            // 動かした先でも「この円の中が影響範囲」という対応が保たれる
+            DrawBrushCircle(_centerWorld + displacement, new Color(0.3f, 0.8f, 1f, 0.8f));
+            if (_mirrorActive)
+            {
+                DrawBrushCircle(_mirrorCenterWorld + mirrorDisplacement, new Color(1f, 0.4f, 0.6f, 0.8f));
+            }
 
             BeginOccludedVertexCulling(out var previousZTest);
 
@@ -1883,16 +1888,25 @@ namespace Dennokoworks.DenMeshEditor.Editor
             }
 
             var current = Event.current;
-            var overlayHeight = _overlayShowsWarning ? 172f : 136f;
-            var overlayWidth = 290f;
+            var overlayHeight = _overlayShowsWarning ? 180f : 144f;
+            var overlayWidth = 320f;
 
             var sceneView = SceneView.currentDrawingSceneView;
             if (sceneView != null)
             {
                 var maxX = Mathf.Max(10f, sceneView.position.width - overlayWidth - 10f);
                 var maxY = Mathf.Max(10f, sceneView.position.height - overlayHeight - 10f);
-                _overlayPosition.x = Mathf.Clamp(_overlayPosition.x, 10f, maxX);
-                _overlayPosition.y = Mathf.Clamp(_overlayPosition.y, 10f, maxY);
+
+                if (_overlayPosition.x < 0f || _overlayPosition.y < 0f)
+                {
+                    _overlayPosition.x = maxX;
+                    _overlayPosition.y = maxY;
+                }
+                else
+                {
+                    _overlayPosition.x = Mathf.Clamp(_overlayPosition.x, 10f, maxX);
+                    _overlayPosition.y = Mathf.Clamp(_overlayPosition.y, 10f, maxY);
+                }
             }
 
             _overlayRect = new Rect(_overlayPosition.x, _overlayPosition.y, overlayWidth, overlayHeight);
@@ -1992,10 +2006,12 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 _settingsUndoGroup = -1;
             }
 
-            var hintStyle = new GUIStyle(EditorStyles.miniLabel)
+            var hintStyle = new GUIStyle(EditorStyles.label)
             {
-                fontSize = 10,
-                normal = { textColor = new Color(0.72f, 0.72f, 0.72f) }
+                fontSize = 15,
+                fontStyle = FontStyle.Bold,
+                wordWrap = true,
+                normal = { textColor = new Color(0.3f, 0.95f, 0.45f) }
             };
             GUILayout.Label("※ ドラッグ中にマウスホイールで半径変更", hintStyle);
 
