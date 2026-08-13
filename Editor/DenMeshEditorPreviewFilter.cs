@@ -40,11 +40,11 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 if (component == null) continue;
                 if (!context.ActiveInHierarchy(component.gameObject)) continue;
 
+                var isEditing = ReferenceEquals(component, editing);
+
                 // ここで監視するのは「対象 Renderer の集合」と「編集の有無」だけ。
                 // デルタの中身はグループ分割に影響しないので、ノード側（Instantiate）で見る
-                ObserveShape(context, component);
-
-                var isEditing = ReferenceEquals(component, editing);
+                ObserveShape(context, component, isEditing);
 
                 foreach (var edit in component.edits)
                 {
@@ -95,9 +95,20 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
         /// <summary>
         /// グループ分割に影響する部分だけを監視する。対象 Renderer と、編集の有無。
+        ///
+        /// 編集セッション中のコンポーネントについては編集の有無を見ない。
+        /// セッション中はデルタが空の対象もグループへ入れている（<see cref="GetTargetGroups"/>）ため
+        /// グループ分割には影響しない一方、これを見てしまうと「最初の 1 頂点を動かした瞬間」や
+        /// 「編集が空に戻る Undo」のたびにパイプライン全体が作り直されてしまう。
         /// </summary>
-        private static void ObserveShape(ComputeContext context, DenMeshEditor component)
+        private static void ObserveShape(ComputeContext context, DenMeshEditor component, bool isEditing)
         {
+            if (isEditing)
+            {
+                context.Observe(component, EditingShapeFingerprint, (a, b) => a == b);
+                return;
+            }
+
             context.Observe(component, ShapeFingerprint, (a, b) => a == b);
         }
 
@@ -108,13 +119,34 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// （NDMF: SingleObjectQueries.cs）なので、brushRadius や falloff のような
         /// プレビュー結果に影響しないプロパティを触っただけでもパイプライン全体が
         /// 再構築される。実際に描画へ効く値だけを抽出して監視する。
+        ///
+        /// 編集セッション中のコンポーネントはそもそも監視しない。セッション中の変更は
+        /// <see cref="LiveEdits.Version"/> 経由で <see cref="DenMeshEditorPreviewNode.OnFrame"/> が
+        /// 拾い、生成済みメッシュの頂点だけを書き換える。ここで監視すると、ドラッグの確定や
+        /// Undo のたびに NDMF がプレビューパイプライン全体を作り直すことになり
+        /// （プロキシの再生成 + 全フィルタの再実行 + メッシュの複製）、高頂点数のアバターでは
+        /// Undo 連打がそのままフリーズになる。
+        /// セッションの開始・終了は ActiveComponent の変化として拾うので、終了時に通常の監視へ戻る。
         /// </summary>
         private static void ObserveEdits(ComputeContext context, DenMeshEditor component)
         {
+            var editing = context.Observe(EditSession.ActiveComponent, c => c, (a, b) => a == b);
+            if (ReferenceEquals(component, editing)) return;
+
             context.Observe(component, EditsFingerprint, (a, b) => a == b);
         }
 
         private static int ShapeFingerprint(DenMeshEditor component)
+        {
+            return ComputeShapeFingerprint(component, true);
+        }
+
+        private static int EditingShapeFingerprint(DenMeshEditor component)
+        {
+            return ComputeShapeFingerprint(component, false);
+        }
+
+        private static int ComputeShapeFingerprint(DenMeshEditor component, bool includeHasEdits)
         {
             if (component == null) return 0;
 
@@ -132,7 +164,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
                     }
 
                     hash = hash * 31 + (edit.target != null ? edit.target.GetInstanceID() : 0);
-                    hash = hash * 31 + (edit.HasEdits ? 1 : 0);
+                    if (includeHasEdits) hash = hash * 31 + (edit.HasEdits ? 1 : 0);
                 }
 
                 return hash;

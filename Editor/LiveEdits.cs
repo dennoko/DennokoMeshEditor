@@ -11,6 +11,12 @@ namespace Dennokoworks.DenMeshEditor.Editor
     /// プレビューパイプラインを再構築する（＝毎フレーム メッシュを複製する）。
     /// そのためコンポーネントへの確定はマウスを離したときの 1 回だけにし、
     /// ドラッグ中はここを経由して反映する。Undo もドラッグ 1 回につき 1 エントリになる。
+    ///
+    /// さらに、編集セッション中はコンポーネント自体が NDMF の監視対象から外れる
+    /// （<c>DenMeshEditorPreviewFilter.ObserveEdits</c>）。そのため
+    /// <see cref="Version"/> はドラッグ中だけでなく、確定・Undo / Redo・編集クリアを含む
+    /// 「セッション中のあらゆる変更」をプレビューへ伝える唯一の合図になっている。
+    /// この経路ではパイプラインは作り直されず、生成済みメッシュの頂点だけが書き換わる。
     /// </summary>
     internal static class LiveEdits
     {

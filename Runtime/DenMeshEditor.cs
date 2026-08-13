@@ -125,14 +125,29 @@ namespace Dennokoworks.DenMeshEditor
 
         public Dictionary<int, Vector3> ToDictionary()
         {
+            var dict = new Dictionary<int, Vector3>(Count);
+            CopyTo(dict);
+            return dict;
+        }
+
+        /// <summary>
+        /// 内容を既存の辞書へ書き出す。
+        ///
+        /// <see cref="ToDictionary"/> と違い辞書を作り直さないので、Undo のたびに走る
+        /// 作業状態の再構築のように、繰り返し呼ばれる経路はこちらを使う
+        /// （編集頂点数ぶんの確保が毎回発生すると GC が跳ねる）。
+        /// </summary>
+        public void CopyTo(Dictionary<int, Vector3> destination)
+        {
+            if (destination == null) return;
+
+            destination.Clear();
+
             var n = Count;
-            var dict = new Dictionary<int, Vector3>(n);
             for (var i = 0; i < n; i++)
             {
-                dict[GetIndex(i)] = GetDelta(i);
+                destination[GetIndex(i)] = GetDelta(i);
             }
-
-            return dict;
         }
 
         /// <summary>
@@ -304,7 +319,6 @@ namespace Dennokoworks.DenMeshEditor
 
         public MirrorAxis mirrorAxis = MirrorAxis.X;
 
-        [Header("ベイク")]
         [Tooltip("ON にすると、元の形状を保ったまま編集分をシェイプキーとして追加します。")]
         public bool bakeAsBlendShape;
 

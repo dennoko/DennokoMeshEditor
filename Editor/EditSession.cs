@@ -4,6 +4,7 @@ using nadena.dev.ndmf.preview;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.Rendering;
 using Object = UnityEngine.Object;
 
 namespace Dennokoworks.DenMeshEditor.Editor
@@ -24,6 +25,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private const float PickThresholdPixels = 24f;
         private const float RefreshIntervalSeconds = 0.1f;
         private const int MaxDrawnVertices = 3000;
+
+        /// <summary>頂点ドットを面から浮かせる量。ドットの半径に対する倍率。</summary>
+        private const float VertexDotDepthBias = 2f;
 
         /// <summary>クリック位置に近い順に、最大でいくつまで遮蔽判定を試すか。</summary>
         private const int MaxPickCandidates = 8;
@@ -100,7 +104,15 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
         private static void OnUndoRedoPerformed()
         {
-            _active?.ResyncFromComponent();
+            if (_active == null) return;
+
+            // 巻き戻し後の状態と食い違う未確定データを捨て、プレビューへ更新を促す。
+            // パイプラインの再構築を挟まず、生成済みメッシュの頂点だけが書き換わる経路
+            ClearLiveEdits();
+
+            // 作業状態の作り直しは次のエディタ更新まで遅らせる。Ctrl+Z を押しっぱなしにして
+            // 同一フレームに複数回届いても、重い作り直しは 1 回で済む
+            _active._resyncPending = true;
         }
 
         internal static void Begin(DenMeshEditor component)
@@ -194,8 +206,11 @@ namespace Dennokoworks.DenMeshEditor.Editor
             public readonly List<Matrix4x4> BindPoses = new List<Matrix4x4>();
             public readonly List<BoneWeight> BoneWeights = new List<BoneWeight>();
 
-            public Dictionary<int, Vector3> Working = new Dictionary<int, Vector3>();
-            public Dictionary<int, Vector3> Snapshot = new Dictionary<int, Vector3>();
+            // Undo やドラッグのたびに作り直さず、中身だけ入れ替えて使う。
+            // Working は LiveEdits へ参照のまま渡してあるので、インスタンスを差し替えない
+            // ことが「公開済みの参照が古くならない」ことの保証にもなっている
+            public readonly Dictionary<int, Vector3> Working = new Dictionary<int, Vector3>();
+            public readonly Dictionary<int, Vector3> Snapshot = new Dictionary<int, Vector3>();
             public bool Touched;
         }
 
@@ -271,6 +286,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private readonly List<TriangleRef> _nearbyTriangles = new List<TriangleRef>();
 
         private double _lastRefresh;
+
+        /// <summary>Undo / Redo を受けて作業状態を作り直す必要があるか。</summary>
+        private bool _resyncPending;
+
         private bool _hasSelection;
         private TargetState _selectedTarget;
         private int _selectedIndex = -1;
@@ -299,6 +318,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private int _hoverIndex = -1;
 
         private Rect _overlayRect;
+        private static Vector2 _overlayPosition = new Vector2(10, 10);
+        private static bool _overlayDragging;
+        private static Vector2 _overlayDragOffset;
 
         // スクリーン座標キャッシュ。視点と形状が変わらない限り再計算しない
         private ViewKey _screenCacheKey;
@@ -404,10 +426,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
             // インスタンスが維持された場合は作業状態だけを作り直す
             foreach (var target in _targets)
             {
-                target.Working = target.Edit != null
-                    ? target.Edit.ToDictionary()
-                    : new Dictionary<int, Vector3>();
-                target.Snapshot = new Dictionary<int, Vector3>(target.Working);
+                if (target.Edit != null) target.Edit.CopyTo(target.Working);
+                else target.Working.Clear();
+
+                CopyDeltas(target.Working, target.Snapshot);
                 target.Touched = false;
             }
 
@@ -439,6 +461,13 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// </summary>
         private void OnEditorUpdate()
         {
+            // Undo / Redo の後始末。描画ループの外側で、1 フレームにつき 1 回だけ行う
+            if (_resyncPending)
+            {
+                _resyncPending = false;
+                ResyncFromComponent();
+            }
+
             // ドラッグ中はハンドル操作自体が再描画を駆動するので不要
             if (_dragging) return;
 
@@ -569,12 +598,14 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             foreach (var edit in wanted)
             {
-                _targets.Add(new TargetState
+                var state = new TargetState
                 {
                     Original = edit.target,
                     Edit = edit,
-                    Working = edit.ToDictionary(),
-                });
+                };
+
+                edit.CopyTo(state.Working);
+                _targets.Add(state);
             }
 
             return true;
@@ -1467,7 +1498,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
         {
             foreach (var target in _targets)
             {
-                target.Snapshot = new Dictionary<int, Vector3>(target.Working);
+                CopyDeltas(target.Working, target.Snapshot);
                 target.Touched = false;
             }
         }
@@ -1581,7 +1612,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             if (!hasChanges)
             {
-                LiveEdits.Clear();
+                ClearLiveEdits();
                 return;
             }
 
@@ -1624,7 +1655,33 @@ namespace Dennokoworks.DenMeshEditor.Editor
             Undo.IncrementCurrentGroup();
 
             // 確定したので、プレビューはコンポーネントの内容を読むようになる
+            ClearLiveEdits();
+        }
+
+        /// <summary>
+        /// 未確定データを捨て、プレビューへ「読み直せ」と伝える。
+        ///
+        /// 編集セッション中のコンポーネントは NDMF から監視されていない
+        /// （理由は <c>DenMeshEditorPreviewFilter.ObserveEdits</c>）ため、コンポーネントを
+        /// 書き換えただけではプレビューが追従しない。更新の合図はこちらから出す。
+        /// </summary>
+        private static void ClearLiveEdits()
+        {
             LiveEdits.Clear();
+            LiveEdits.Invalidate();
+        }
+
+        /// <summary>
+        /// ハンドルの変位に対応する、ミラー側の変位を求める。
+        /// 中心だけでなく変位ベクトルも反射する。これを忘れると反対側が同じ向きに動く。
+        /// </summary>
+        private Vector3 MirrorDisplacement(Vector3 displacement)
+        {
+            if (!_mirrorActive) return Vector3.zero;
+
+            var root = MirrorRoot;
+            var inRoot = root.worldToLocalMatrix.MultiplyVector(displacement);
+            return root.localToWorldMatrix.MultiplyVector(Reflect(inRoot, _component.mirrorAxis));
         }
 
         /// <summary>
@@ -1633,15 +1690,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private void ApplyDisplacement()
         {
             var displacement = _handlePosition - _centerWorld;
-
-            var mirrorDisplacement = Vector3.zero;
-            if (_mirrorActive)
-            {
-                var root = MirrorRoot;
-                var inRoot = root.worldToLocalMatrix.MultiplyVector(displacement);
-                // 中心だけでなく変位ベクトルも反射する。これを忘れると反対側が同じ向きに動く。
-                mirrorDisplacement = root.localToWorldMatrix.MultiplyVector(Reflect(inRoot, _component.mirrorAxis));
-            }
+            var mirrorDisplacement = MirrorDisplacement(displacement);
 
             // 前フレームの寄与を打ち消すため、確定済みスナップショットから作り直す
             foreach (var target in _targets)
@@ -1685,19 +1734,44 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// </summary>
         private static void ResetWorkingToSnapshot(TargetState target)
         {
-            target.Working.Clear();
-            foreach (var pair in target.Snapshot)
+            CopyDeltas(target.Snapshot, target.Working);
+        }
+
+        /// <summary>
+        /// デルタ辞書の内容を移す。インスタンスは作り直さず、確保済みの容量を使い回す。
+        /// </summary>
+        private static void CopyDeltas(Dictionary<int, Vector3> source, Dictionary<int, Vector3> destination)
+        {
+            destination.Clear();
+            foreach (var pair in source)
             {
-                target.Working.Add(pair.Key, pair.Value);
+                destination.Add(pair.Key, pair.Value);
             }
         }
 
         // ------------------------------------------------------------------
         // 描画
 
+        /// <summary>
+        /// シーンの深度バッファと比較して、面の裏に隠れている頂点ドットを描かないようにする。
+        ///
+        /// プレビュー対象のメッシュはシーンビューが既に描画済みなので、深度バッファには
+        /// 「実際に見えている形状」が入っている。CPU 側で遮蔽判定をやり直す必要はない。
+        /// </summary>
+        private static void BeginOccludedVertexCulling(out CompareFunction previous)
+        {
+            previous = Handles.zTest;
+            Handles.zTest = CompareFunction.LessEqual;
+        }
+
         private void DrawGizmos()
         {
             if (Event.current.type != EventType.Repaint) return;
+
+            var camera = Camera.current;
+            if (camera == null) return;
+
+            var cameraPosition = camera.transform.position;
 
             if (!_hasSelection)
             {
@@ -1705,15 +1779,27 @@ namespace Dennokoworks.DenMeshEditor.Editor
                     _hoverIndex >= _hoverTarget.WorldVertices.Length) return;
 
                 var hovered = _hoverTarget.WorldVertices[_hoverIndex];
-                Handles.color = new Color(1f, 0.8f, 0.2f, 0.9f);
-                Handles.DotHandleCap(0, hovered, Quaternion.identity,
-                    GetVertexDotSize(hovered, 0.045f, 0.35f), EventType.Repaint);
+
+                // ブラシ円は面に隠れると位置を見失うので、深度比較の対象にしない
                 DrawBrushCircle(hovered, new Color(1f, 0.8f, 0.2f, 0.6f));
+
+                BeginOccludedVertexCulling(out var previousHoverZTest);
+                Handles.color = new Color(1f, 0.8f, 0.2f, 0.9f);
+                DrawVertexDot(hovered, cameraPosition, 0.045f, 0.35f);
+                Handles.zTest = previousHoverZTest;
                 return;
             }
 
             DrawBrushCircle(_centerWorld, new Color(0.3f, 0.8f, 1f, 0.8f));
             if (_mirrorActive) DrawBrushCircle(_mirrorCenterWorld, new Color(1f, 0.4f, 0.6f, 0.8f));
+
+            // ドラッグ中、プレビューのメッシュは既に変形しているが WorldVertices は
+            // ドラッグ開始時のままなので、同じ変位を足した位置へ描く。
+            // これをしないと、動かした先の面にドットが埋もれて遮蔽判定で消えてしまう
+            var displacement = _dragging ? _handlePosition - _centerWorld : Vector3.zero;
+            var mirrorDisplacement = _dragging ? MirrorDisplacement(displacement) : Vector3.zero;
+
+            BeginOccludedVertexCulling(out var previousZTest);
 
             // 影響を受ける頂点を表示する（多すぎる場合は間引く）
             var step = Mathf.Max(1, _influences.Count / MaxDrawnVertices);
@@ -1727,10 +1813,33 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 Handles.color = Color.Lerp(new Color(0.2f, 0.4f, 0.8f, 0.25f),
                     new Color(1f, 0.3f, 0.3f, 0.9f), strength);
 
-                var world = vertices[influence.Index];
-                Handles.DotHandleCap(0, world, Quaternion.identity,
-                    GetVertexDotSize(world, 0.025f, 0.18f), EventType.Repaint);
+                var world = vertices[influence.Index]
+                            + displacement * influence.Weight
+                            + mirrorDisplacement * influence.MirrorWeight;
+
+                DrawVertexDot(world, cameraPosition, 0.025f, 0.18f);
             }
+
+            Handles.zTest = previousZTest;
+        }
+
+        /// <summary>
+        /// 頂点ドットを 1 つ描く。
+        ///
+        /// 面のちょうど上に描くと深度比較が拮抗してドットが明滅するため、カメラ側へわずかに
+        /// 浮かせる。浮かせる量をドットの見かけの大きさに比例させることで、スクリーン上の
+        /// 浮き量は距離やズームによらず一定になり、逆に「メッシュの厚みを越えて裏の頂点まで
+        /// 見えてしまう」ことも起きにくい。
+        /// </summary>
+        private void DrawVertexDot(Vector3 world, Vector3 cameraPosition, float screenScale, float maxRadiusRatio)
+        {
+            var size = GetVertexDotSize(world, screenScale, maxRadiusRatio);
+
+            var toCamera = cameraPosition - world;
+            var distance = toCamera.magnitude;
+            if (distance > 1e-6f) world += toCamera * (size * VertexDotDepthBias / distance);
+
+            Handles.DotHandleCap(0, world, Quaternion.identity, size, EventType.Repaint);
         }
 
         /// <summary>
@@ -1773,15 +1882,77 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 _overlayShowsWarning = _showFallbackWarning;
             }
 
-            _overlayRect = new Rect(10, 10, 280, _overlayShowsWarning ? 152 : 116);
+            var current = Event.current;
+            var overlayHeight = _overlayShowsWarning ? 172f : 136f;
+            var overlayWidth = 290f;
+
+            var sceneView = SceneView.currentDrawingSceneView;
+            if (sceneView != null)
+            {
+                var maxX = Mathf.Max(10f, sceneView.position.width - overlayWidth - 10f);
+                var maxY = Mathf.Max(10f, sceneView.position.height - overlayHeight - 10f);
+                _overlayPosition.x = Mathf.Clamp(_overlayPosition.x, 10f, maxX);
+                _overlayPosition.y = Mathf.Clamp(_overlayPosition.y, 10f, maxY);
+            }
+
+            _overlayRect = new Rect(_overlayPosition.x, _overlayPosition.y, overlayWidth, overlayHeight);
+            var headerRect = new Rect(_overlayRect.x, _overlayRect.y, _overlayRect.width, 24f);
+
+            // ヘッダーのドラッグ移動
+            if (current.type == EventType.MouseDown && current.button == 0 && headerRect.Contains(current.mousePosition))
+            {
+                _overlayDragging = true;
+                _overlayDragOffset = current.mousePosition - _overlayPosition;
+                current.Use();
+            }
+            else if (current.type == EventType.MouseDrag && _overlayDragging)
+            {
+                _overlayPosition = current.mousePosition - _overlayDragOffset;
+                if (sceneView != null)
+                {
+                    var maxX = Mathf.Max(10f, sceneView.position.width - overlayWidth - 10f);
+                    var maxY = Mathf.Max(10f, sceneView.position.height - overlayHeight - 10f);
+                    _overlayPosition.x = Mathf.Clamp(_overlayPosition.x, 10f, maxX);
+                    _overlayPosition.y = Mathf.Clamp(_overlayPosition.y, 10f, maxY);
+                }
+                current.Use();
+                GUI.changed = true;
+            }
+            else if ((current.type == EventType.MouseUp || current.rawType == EventType.MouseUp) && _overlayDragging)
+            {
+                _overlayDragging = false;
+                current.Use();
+            }
 
             Handles.BeginGUI();
-            GUILayout.BeginArea(_overlayRect, GUI.skin.box);
+
+            // 背景（半透明ダーク）と緑の強調枠線（2px）
+            EditorGUI.DrawRect(_overlayRect, new Color(0.16f, 0.16f, 0.16f, 0.94f));
+            DrawOutlineRect(_overlayRect, new Color(0.25f, 0.88f, 0.45f, 0.95f), 2f);
+
+            // ヘッダーの移動カーソル
+            EditorGUIUtility.AddCursorRect(headerRect, MouseCursor.MoveArrow);
+
+            GUILayout.BeginArea(_overlayRect, GUIStyle.none);
+
+            GUILayout.Space(4);
 
             var previousLabelWidth = EditorGUIUtility.labelWidth;
             EditorGUIUtility.labelWidth = 70f;
 
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.Space(8);
             GUILayout.Label("Den Mesh Editor — 編集中", EditorStyles.boldLabel);
+            GUILayout.FlexibleSpace();
+            GUILayout.Label("⠿", EditorStyles.miniLabel);
+            GUILayout.Space(8);
+            EditorGUILayout.EndHorizontal();
+
+            GUILayout.Space(2);
+
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.Space(8);
+            EditorGUILayout.BeginVertical();
 
             EditorGUI.BeginChangeCheck();
             // ドラッグ中にホイールで変えた未確定の半径もそのまま表示する
@@ -1821,16 +1992,39 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 _settingsUndoGroup = -1;
             }
 
+            var hintStyle = new GUIStyle(EditorStyles.miniLabel)
+            {
+                fontSize = 10,
+                normal = { textColor = new Color(0.72f, 0.72f, 0.72f) }
+            };
+            GUILayout.Label("※ ドラッグ中にマウスホイールで半径変更", hintStyle);
+
             if (_overlayShowsWarning)
             {
                 EditorGUILayout.HelpBox("NDMF プレビュー未取得。他ツールの影響は反映されていません。",
                     MessageType.Warning);
             }
 
+            EditorGUILayout.EndVertical();
+            GUILayout.Space(8);
+            EditorGUILayout.EndHorizontal();
+
             EditorGUIUtility.labelWidth = previousLabelWidth;
 
             GUILayout.EndArea();
             Handles.EndGUI();
+        }
+
+        private static void DrawOutlineRect(Rect rect, Color color, float width = 2f)
+        {
+            // Top
+            EditorGUI.DrawRect(new Rect(rect.x, rect.y, rect.width, width), color);
+            // Bottom
+            EditorGUI.DrawRect(new Rect(rect.x, rect.yMax - width, rect.width, width), color);
+            // Left
+            EditorGUI.DrawRect(new Rect(rect.x, rect.y + width, width, rect.height - width * 2f), color);
+            // Right
+            EditorGUI.DrawRect(new Rect(rect.xMax - width, rect.y + width, width, rect.height - width * 2f), color);
         }
     }
 }
