@@ -23,8 +23,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
             }
 
             var current = Event.current;
-            var overlayHeight = _overlayShowsWarning ? 186f : 148f;
-            var overlayWidth = 320f;
+            var overlayHeight = _overlayShowsWarning ? 204f : 164f;
+            var overlayWidth = 330f;
             const float margin = 10f;
 
             // シーンビューの実際の描画領域サイズ（GUI 座標系）を取得
@@ -106,7 +106,6 @@ namespace Dennokoworks.DenMeshEditor.Editor
             // ドラッグ中にホイールで変えた未確定の半径もそのまま表示する
             var radius = EditorGUILayout.Slider("半径", BrushRadius, MinBrushRadius, MaxBrushRadius);
             var falloff = (FalloffType)EditorGUILayout.EnumPopup("減衰", _component.falloff);
-            var mirror = EditorGUILayout.Toggle("ミラー", _component.mirror);
             if (EditorGUI.EndChangeCheck())
             {
                 // スライダーのドラッグは毎フレーム変更を出すので、
@@ -123,10 +122,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 _hasPendingRadius = false;
                 _component.brushRadius = radius;
                 _component.falloff = falloff;
-                _component.mirror = mirror;
                 EditorUtility.SetDirty(_component);
 
-                // 半径・減衰・ミラーが変わったら影響範囲を計算し直す
+                // 半径・減衰が変わったら影響範囲を計算し直す
                 if (_hasSelection)
                 {
                     RecomputeMirrorCenter();
@@ -139,6 +137,34 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 Undo.CollapseUndoOperations(_settingsUndoGroup);
                 _settingsUndoGroup = -1;
             }
+
+            GUILayout.Space(3);
+
+            var mirrorActive = _component.mirror;
+            var prevColor = GUI.backgroundColor;
+            if (mirrorActive)
+            {
+                GUI.backgroundColor = new Color(0.35f, 0.95f, 0.45f);
+            }
+
+            var buttonText = mirrorActive ? "ミラー: 有効 (ON)" : "ミラー: 無効 (OFF)";
+            if (GUILayout.Button(buttonText, GUILayout.Height(28)))
+            {
+                Undo.RecordObject(_component, "Den Mesh Editor Mirror Toggle");
+                _component.mirror = !mirrorActive;
+                EditorUtility.SetDirty(_component);
+
+                // ミラー設定が変わったら影響範囲と中心を計算し直す
+                if (_hasSelection)
+                {
+                    RecomputeMirrorCenter();
+                    BuildInfluences();
+                }
+
+                SceneView.RepaintAll();
+            }
+
+            GUI.backgroundColor = prevColor;
 
             GUILayout.Space(2);
 
