@@ -1707,7 +1707,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 var hovered = _hoverTarget.WorldVertices[_hoverIndex];
                 Handles.color = new Color(1f, 0.8f, 0.2f, 0.9f);
                 Handles.DotHandleCap(0, hovered, Quaternion.identity,
-                    HandleUtility.GetHandleSize(hovered) * 0.03f, EventType.Repaint);
+                    GetVertexDotSize(hovered, 0.045f, 0.35f), EventType.Repaint);
                 DrawBrushCircle(hovered, new Color(1f, 0.8f, 0.2f, 0.6f));
                 return;
             }
@@ -1729,8 +1729,28 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
                 var world = vertices[influence.Index];
                 Handles.DotHandleCap(0, world, Quaternion.identity,
-                    HandleUtility.GetHandleSize(world) * 0.012f, EventType.Repaint);
+                    GetVertexDotSize(world, 0.025f, 0.18f), EventType.Repaint);
             }
+        }
+
+        /// <summary>
+        /// 頂点プレビューのドットサイズを計算する。
+        /// カメラが離れたときにスクリーン上のドットが相対的に巨大化してメッシュを覆い隠さないよう、
+        /// 距離に応じた減衰およびブラシ半径に対する上限補正をかける。
+        /// </summary>
+        private float GetVertexDotSize(Vector3 worldPosition, float screenScale, float maxRadiusRatio = 0.25f)
+        {
+            var handleSize = HandleUtility.GetHandleSize(worldPosition);
+            // 近距離・通常編集距離（handleSize ≒ 0.05m 前後）を基準とする
+            const float refSize = 0.05f;
+
+            // 基準距離より離れるほど、スクリーン上の見かけサイズを緩やかに減衰させる
+            var distanceScale = handleSize <= refSize ? 1f : Mathf.Sqrt(refSize / handleSize);
+            var size = handleSize * screenScale * distanceScale;
+
+            // ブラシ円に対してドットが大きくなりすぎないように上限を設ける
+            var maxByRadius = BrushRadius * maxRadiusRatio;
+            return Mathf.Min(size, maxByRadius);
         }
 
         private void DrawBrushCircle(Vector3 center, Color color)

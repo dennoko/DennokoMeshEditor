@@ -13,6 +13,11 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private SerializedProperty _mirrorAxis;
         private SerializedProperty _bakeAsBlendShape;
 
+        // バージョン表記 + 更新チェックの結果。State は保持せず表示のたびに
+        // 「現在のローカル版 vs 取得済みの最新版」で再計算した値を受け取る。
+        private DennokoVersionChecker.Result _versionResult;
+        private static GUIStyle _versionLinkStyle;
+
         [MenuItem("GameObject/dennokoworks/Den Mesh Editor", false, 20)]
         private static void AddDenMeshEditorMenuItem(MenuCommand menuCommand)
         {
@@ -62,6 +67,19 @@ namespace Dennokoworks.DenMeshEditor.Editor
             _mirror = serializedObject.FindProperty("mirror");
             _mirrorAxis = serializedObject.FindProperty("mirrorAxis");
             _bakeAsBlendShape = serializedObject.FindProperty("bakeAsBlendShape");
+
+            // 前回の取得結果を反映しつつ、未取得／前回エラーなら取得を開始する
+            //（要否の判定は StartCheckBackgroundTask 内で行う）。Inspector を選び直す
+            // たびに一時的な取得失敗から自己回復できる。
+            ReloadVersionResult();
+            DenMeshEditorVersion.StartCheckBackgroundTask();
+        }
+
+        /// <summary>取得完了時に <see cref="DenMeshEditorVersion"/> から呼ばれる。</summary>
+        internal void ReloadVersionResult()
+        {
+            _versionResult = DenMeshEditorVersion.LoadResultFromSessionState();
+            Repaint();
         }
 
         /// <summary>
@@ -78,6 +96,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
             var component = (DenMeshEditor)target;
             serializedObject.Update();
 
+            DrawVersionBar();
+            EditorGUILayout.Space();
             DrawTargets();
             EditorGUILayout.Space();
             DrawEditControls(component);
@@ -93,6 +113,81 @@ namespace Dennokoworks.DenMeshEditor.Editor
             {
                 EditSession.NotifySettingsChanged();
             }
+        }
+
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// 一番上の 1 行。左に現在のバージョン、その隣に更新状態、右端に再確認ボタン。
+        /// 「更新あり」のときだけクリックでダウンロードページを開く。
+        /// </summary>
+        private void DrawVersionBar()
+        {
+            if (_versionLinkStyle == null)
+            {
+                _versionLinkStyle = new GUIStyle(EditorStyles.miniLabel);
+            }
+
+            var prevColor = GUI.contentColor;
+
+            EditorGUILayout.BeginHorizontal();
+
+            GUI.contentColor = new Color(0.68f, 0.68f, 0.68f);
+            GUILayout.Label($"v{_versionResult.LocalVersion}", EditorStyles.miniLabel, GUILayout.ExpandWidth(false));
+            GUI.contentColor = prevColor;
+
+            switch (_versionResult.State)
+            {
+                case DennokoVersionChecker.State.UpdateAvailable:
+                {
+                    var tooltip = string.IsNullOrEmpty(_versionResult.Message)
+                        ? "クリックでダウンロードページを開きます"
+                        : _versionResult.Message;
+
+                    GUI.contentColor = new Color(0.35f, 0.8f, 0.4f);
+                    var clicked = GUILayout.Button(
+                        new GUIContent($"更新あり {_versionResult.LatestVersion} ↗", tooltip),
+                        _versionLinkStyle, GUILayout.ExpandWidth(false));
+                    GUI.contentColor = prevColor;
+
+                    EditorGUIUtility.AddCursorRect(GUILayoutUtility.GetLastRect(), MouseCursor.Link);
+                    if (clicked)
+                    {
+                        DenMeshEditorVersion.OpenUpdatePage(_versionResult.Url);
+                    }
+                    break;
+                }
+
+                case DennokoVersionChecker.State.Error:
+                    GUI.contentColor = new Color(1f, 0.72f, 0.3f);
+                    GUILayout.Label(
+                        new GUIContent("最新版を取得できません", "↻ ボタンで再確認できます"),
+                        EditorStyles.miniLabel, GUILayout.ExpandWidth(false));
+                    GUI.contentColor = prevColor;
+                    break;
+
+                case DennokoVersionChecker.State.Checking:
+                    GUI.contentColor = new Color(0.55f, 0.55f, 0.55f);
+                    GUILayout.Label("確認中...", EditorStyles.miniLabel, GUILayout.ExpandWidth(false));
+                    GUI.contentColor = prevColor;
+                    break;
+
+                default: // UpToDate — バージョン表記だけ
+                    break;
+            }
+
+            GUILayout.FlexibleSpace();
+
+            if (GUILayout.Button(new GUIContent("↻", "アップデートを再確認"), EditorStyles.miniButton, GUILayout.Width(22)))
+            {
+                DenMeshEditorVersion.ForceRecheck();
+                ReloadVersionResult(); // 即座に「確認中...」表示へ
+            }
+
+            EditorGUILayout.EndHorizontal();
+
+            var separator = EditorGUILayout.GetControlRect(false, 1f);
+            EditorGUI.DrawRect(separator, new Color(0f, 0f, 0f, 0.2f));
         }
 
         // ------------------------------------------------------------------
