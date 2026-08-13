@@ -186,24 +186,25 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             using (new EditorGUI.DisabledScope(!editing && _edits.arraySize == 0))
             {
+                var prevColor = GUI.backgroundColor;
                 if (editing)
                 {
-                    GUI.backgroundColor = new Color(1f, 0.6f, 0.6f);
+                    GUI.backgroundColor = new Color(1f, 0.55f, 0.55f);
                     if (GUILayout.Button("編集終了", GUILayout.Height(28)))
                     {
                         EditSession.End();
                     }
-
-                    GUI.backgroundColor = Color.white;
                 }
                 else
                 {
+                    GUI.backgroundColor = new Color(0.35f, 0.75f, 1f);
                     if (GUILayout.Button("編集", GUILayout.Height(28)))
                     {
                         serializedObject.ApplyModifiedProperties();
                         EditSession.Begin(component);
                     }
                 }
+                GUI.backgroundColor = prevColor;
             }
 
             if (!editing) return;
@@ -236,7 +237,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             var prevColor = GUI.backgroundColor;
             if (mirrorActive)
             {
-                GUI.backgroundColor = new Color(0.4f, 0.85f, 0.55f);
+                GUI.backgroundColor = new Color(0.35f, 0.95f, 0.45f);
             }
 
             var buttonText = mirrorActive ? "ミラー: 有効 (ON)" : "ミラー: 無効 (OFF)";

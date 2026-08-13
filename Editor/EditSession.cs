@@ -120,7 +120,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             // プレビューフィルタへ「編集開始」を伝え、プロキシを生成させる
             ActiveComponent.Value = component;
 
-            SceneView.RepaintAll();
+            UnityEditorInternal.InternalEditorUtility.RepaintAllViews();
         }
 
         internal static void End()
@@ -136,7 +136,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             Tools.hidden = _toolsHiddenBefore;
             ActiveComponent.Value = null;
 
-            SceneView.RepaintAll();
+            UnityEditorInternal.InternalEditorUtility.RepaintAllViews();
         }
 
         internal static void NotifySettingsChanged()
@@ -756,8 +756,15 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             if (current.type == EventType.KeyDown && current.keyCode == KeyCode.Escape)
             {
-                if (_hasSelection) ClearSelection();
-                else End();
+                if (_hasSelection)
+                {
+                    ClearSelection();
+                    sceneView.Repaint();
+                }
+                else
+                {
+                    End();
+                }
                 current.Use();
                 return;
             }
