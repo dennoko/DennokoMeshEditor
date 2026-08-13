@@ -300,6 +300,16 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private bool _dragging;
 
         /// <summary>
+        /// 移動ハンドルを掴んでいるか。<see cref="_dragging"/> と違い、掴んだだけで
+        /// まだ動かしていない状態も含む。
+        ///
+        /// 半径のホイール変更はこちらを条件にする。掴んだ時点で「その頂点をどう動かすか」の
+        /// 操作に入っているので、動かす前に影響範囲を決められないと手順が前後する
+        /// （実際、掴んだままホイールを回すとシーンビューがズームしてしまい直観に反する）。
+        /// </summary>
+        private bool _handleGrabbed;
+
+        /// <summary>
         /// 選択頂点の「自分のデルタを除いた」ワールド位置と、そのスキニング行列。
         ///
         /// ハンドル位置は常に <c>_selectedBaseWorld + skin * delta</c> で表せる。
@@ -310,7 +320,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
         private Matrix4x4 _selectedSkin = Matrix4x4.identity;
 
-        // ドラッグ中にホイールで変更した半径。確定するまでコンポーネントには書かない
+        // ハンドルを掴んでいる間にホイールで変更した半径。確定するまでコンポーネントには書かない
         private float _pendingRadius;
         private bool _hasPendingRadius;
 
@@ -318,7 +328,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private int _hoverIndex = -1;
 
         private Rect _overlayRect;
-        private static Vector2 _overlayPosition = new Vector2(-1f, -1f);
+        private static bool _hasCustomOverlayPosition;
+        private static Vector2 _overlayPosition;
         private static bool _overlayDragging;
         private static Vector2 _overlayDragOffset;
 
@@ -360,7 +371,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
         internal bool ShowFallbackWarning => _showFallbackWarning;
 
         /// <summary>
-        /// 現在有効なブラシ半径。ドラッグ中にホイールで変更した未確定値を優先する。
+        /// 現在有効なブラシ半径。ハンドル操作中にホイールで変更した未確定値を優先する。
         /// </summary>
         private float BrushRadius => _hasPendingRadius ? _pendingRadius : _component.brushRadius;
 
@@ -411,6 +422,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             LiveEdits.Clear();
             _dragging = false;
+            _handleGrabbed = false;
             _hasPendingRadius = false;
             _settingsUndoGroup = -1;
 
@@ -807,7 +819,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             var defaultControl = GUIUtility.GetControlID(FocusType.Passive);
             HandleUtility.AddDefaultControl(defaultControl);
 
-            DrawOverlay();
+            DrawOverlay(sceneView);
             HandleSelection(current, defaultControl);
             HandleRadiusScroll(current);
             HandleDrag(current);
@@ -1508,6 +1520,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             // ドラッグ中に Esc で解除されうる。ここで降ろさないと _dragging が立ちっぱなしになり、
             // 頂点位置の更新（Refresh）が二度と走らなくなる
             _dragging = false;
+            _handleGrabbed = false;
             _hasPendingRadius = false;
 
             _hasSelection = false;
@@ -1520,10 +1533,11 @@ namespace Dennokoworks.DenMeshEditor.Editor
         }
 
         /// <summary>
-        /// ドラッグ中のホイール操作でブラシ半径を変更する。
+        /// ハンドルを掴んでいる間のホイール操作でブラシ半径を変更する。
         ///
-        /// 影響範囲の再計算に使う頂点位置（<see cref="TargetState.WorldVertices"/>）は
-        /// ドラッグ中は更新されない＝ドラッグ開始時の形状のままなので、
+        /// 影響範囲の再計算に使う頂点位置（<see cref="TargetState.WorldVertices"/>）は、
+        /// ドラッグ中は更新されない＝ドラッグ開始時の形状のままであり、掴んだだけで
+        /// まだ動かしていない間は形状そのものが変わらない。どちらの場合も
         /// 選択時と同じ基準で影響範囲を計算し直せる。
         ///
         /// 半径を縮めた場合、範囲から外れた頂点は <see cref="ApplyDisplacement"/> が
@@ -1531,8 +1545,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// </summary>
         private void HandleRadiusScroll(Event current)
         {
-            // ドラッグ中のみ横取りする。それ以外ではシーンビューのズームを妨げない
-            if (!_dragging || !_hasSelection) return;
+            // ハンドルを掴んでいる間だけ横取りする。それ以外ではシーンビューのズームを妨げない
+            if (!_hasSelection) return;
+            if (!_dragging && !_handleGrabbed) return;
             if (current.type != EventType.ScrollWheel) return;
 
             // ホイール上方向で delta.y が負になる。上で拡大、下で縮小
@@ -1556,6 +1571,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             EditorGUI.BeginChangeCheck();
 
+            // ハンドルが hotControl を取った瞬間＝掴んだ瞬間。PositionHandle の前後で比べる
+            // ことで、掴んだのが自分のハンドルかどうかを取り違えずに判定できる
+            var hotBefore = GUIUtility.hotControl;
+
             // Tools.pivotRotation（Global / Local）に追従させる
             var moved = Handles.PositionHandle(_handlePosition, Tools.handleRotation);
             if (EditorGUI.EndChangeCheck())
@@ -1565,7 +1584,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 ApplyDisplacement();
             }
 
-            if (!_dragging) return;
+            if (hotBefore == 0 && GUIUtility.hotControl != 0) _handleGrabbed = true;
+
+            if (!_dragging && !_handleGrabbed) return;
 
             // Handles.PositionHandle は hotControl を持った状態で MouseUp を受け取ると
             // evt.Use() を呼ぶ。Event.current は同一インスタンスなので、ここへ来た時点で
@@ -1578,6 +1599,12 @@ namespace Dennokoworks.DenMeshEditor.Editor
             // hotControl が落ちたことの両方で検出する（後者はウィンドウ外での
             // リリースやフォーカス喪失も拾える）。
             if (GUIUtility.hotControl != 0 && current.rawType != EventType.MouseUp) return;
+
+            _handleGrabbed = false;
+
+            // 掴んだだけで動かさなかった場合は確定するものが無い。ただしその間に
+            // ホイールで半径を変えていれば、それは書き込む必要がある
+            if (!_dragging && !_hasPendingRadius) return;
 
             _dragging = false;
             Commit();
@@ -1876,7 +1903,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             Handles.DrawWireDisc(center, camera.transform.forward, BrushRadius);
         }
 
-        private void DrawOverlay()
+        private void DrawOverlay(SceneView sceneView)
         {
             // Layout と Repaint で GUILayout の構成が変わると
             // 「Getting control N's position in a group with only M controls」で例外になる。
@@ -1888,25 +1915,28 @@ namespace Dennokoworks.DenMeshEditor.Editor
             }
 
             var current = Event.current;
-            var overlayHeight = _overlayShowsWarning ? 180f : 144f;
+            var overlayHeight = _overlayShowsWarning ? 186f : 148f;
             var overlayWidth = 320f;
+            const float margin = 10f;
 
-            var sceneView = SceneView.currentDrawingSceneView;
-            if (sceneView != null)
+            // シーンビューの実際の描画領域サイズ（GUI 座標系）を取得
+            var canvasWidth = GetCanvasWidth(sceneView);
+            var canvasHeight = GetCanvasHeight(sceneView);
+
+            var maxX = Mathf.Max(margin, canvasWidth - overlayWidth - margin);
+            var maxY = Mathf.Max(margin, canvasHeight - overlayHeight - margin);
+
+            if (!_hasCustomOverlayPosition)
             {
-                var maxX = Mathf.Max(10f, sceneView.position.width - overlayWidth - 10f);
-                var maxY = Mathf.Max(10f, sceneView.position.height - overlayHeight - 10f);
-
-                if (_overlayPosition.x < 0f || _overlayPosition.y < 0f)
-                {
-                    _overlayPosition.x = maxX;
-                    _overlayPosition.y = maxY;
-                }
-                else
-                {
-                    _overlayPosition.x = Mathf.Clamp(_overlayPosition.x, 10f, maxX);
-                    _overlayPosition.y = Mathf.Clamp(_overlayPosition.y, 10f, maxY);
-                }
+                // デフォルトは右下追従（ウィンドウのリサイズや比率変更にも追従）
+                _overlayPosition.x = maxX;
+                _overlayPosition.y = maxY;
+            }
+            else
+            {
+                // ドラッグ移動後の位置も、画面外に飛び出さないようクランプ
+                _overlayPosition.x = Mathf.Clamp(_overlayPosition.x, margin, maxX);
+                _overlayPosition.y = Mathf.Clamp(_overlayPosition.y, margin, maxY);
             }
 
             _overlayRect = new Rect(_overlayPosition.x, _overlayPosition.y, overlayWidth, overlayHeight);
@@ -1917,18 +1947,14 @@ namespace Dennokoworks.DenMeshEditor.Editor
             {
                 _overlayDragging = true;
                 _overlayDragOffset = current.mousePosition - _overlayPosition;
+                _hasCustomOverlayPosition = true;
                 current.Use();
             }
             else if (current.type == EventType.MouseDrag && _overlayDragging)
             {
                 _overlayPosition = current.mousePosition - _overlayDragOffset;
-                if (sceneView != null)
-                {
-                    var maxX = Mathf.Max(10f, sceneView.position.width - overlayWidth - 10f);
-                    var maxY = Mathf.Max(10f, sceneView.position.height - overlayHeight - 10f);
-                    _overlayPosition.x = Mathf.Clamp(_overlayPosition.x, 10f, maxX);
-                    _overlayPosition.y = Mathf.Clamp(_overlayPosition.y, 10f, maxY);
-                }
+                _overlayPosition.x = Mathf.Clamp(_overlayPosition.x, margin, maxX);
+                _overlayPosition.y = Mathf.Clamp(_overlayPosition.y, margin, maxY);
                 current.Use();
                 GUI.changed = true;
             }
@@ -1949,7 +1975,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             GUILayout.BeginArea(_overlayRect, GUIStyle.none);
 
-            GUILayout.Space(4);
+            GUILayout.Space(6);
 
             var previousLabelWidth = EditorGUIUtility.labelWidth;
             EditorGUIUtility.labelWidth = 70f;
@@ -2006,6 +2032,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 _settingsUndoGroup = -1;
             }
 
+            GUILayout.Space(2);
+
             var hintStyle = new GUIStyle(EditorStyles.label)
             {
                 fontSize = 15,
@@ -2013,7 +2041,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 wordWrap = true,
                 normal = { textColor = new Color(0.3f, 0.95f, 0.45f) }
             };
-            GUILayout.Label("※ ドラッグ中にマウスホイールで半径変更", hintStyle);
+            GUILayout.Label("※ ハンドル操作中にマウスホイールで半径変更", hintStyle);
 
             if (_overlayShowsWarning)
             {
@@ -2029,6 +2057,32 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             GUILayout.EndArea();
             Handles.EndGUI();
+        }
+
+        private static float GetCanvasWidth(SceneView sceneView)
+        {
+            if (sceneView != null && sceneView.camera != null)
+            {
+                var ppp = EditorGUIUtility.pixelsPerPoint;
+                if (ppp > 0f && sceneView.camera.pixelWidth > 0)
+                {
+                    return sceneView.camera.pixelWidth / ppp;
+                }
+            }
+            return sceneView != null ? sceneView.position.width : 800f;
+        }
+
+        private static float GetCanvasHeight(SceneView sceneView)
+        {
+            if (sceneView != null && sceneView.camera != null)
+            {
+                var ppp = EditorGUIUtility.pixelsPerPoint;
+                if (ppp > 0f && sceneView.camera.pixelHeight > 0)
+                {
+                    return sceneView.camera.pixelHeight / ppp;
+                }
+            }
+            return sceneView != null ? sceneView.position.height : 600f;
         }
 
         private static void DrawOutlineRect(Rect rect, Color color, float width = 2f)
