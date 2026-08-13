@@ -293,6 +293,7 @@ namespace Dennokoworks.DenMeshEditor
 
         [Header("ブラシ設定")]
         [Tooltip("プロポーショナル編集の影響半径（ワールド単位）。")]
+        [Range(0.001f, 0.5f)]
         public float brushRadius = 0.03f;
 
         public FalloffType falloff = FalloffType.Smooth;

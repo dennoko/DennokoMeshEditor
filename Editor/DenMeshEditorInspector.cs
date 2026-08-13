@@ -227,7 +227,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private void DrawBrushSettings()
         {
             EditorGUILayout.LabelField("ブラシ設定", EditorStyles.boldLabel);
-            EditorGUILayout.PropertyField(_brushRadius, new GUIContent("半径", "プロポーショナル編集の影響半径（ワールド単位）"));
+            EditorGUILayout.Slider(_brushRadius, EditSession.MinBrushRadius, EditSession.MaxBrushRadius, new GUIContent("半径", "プロポーショナル編集の影響半径（ワールド単位）"));
             EditorGUILayout.PropertyField(_falloff, new GUIContent("減衰"));
 
             EditorGUILayout.Space(2);
