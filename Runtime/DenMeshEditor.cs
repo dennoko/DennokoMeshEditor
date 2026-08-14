@@ -35,6 +35,9 @@ namespace Dennokoworks.DenMeshEditor
         [Tooltip("ON にすると、元の形状を保ったまま編集分をシェイプキーとして追加します。")]
         public bool bakeAsBlendShape;
 
+        [Tooltip("追加するシェイプキーの名前。空の場合は元メッシュ名 + _edited になります。")]
+        public string blendShapeName = string.Empty;
+
         /// <summary>
         /// コンポーネント追加時に呼ばれる。Renderer を持つオブジェクトに付与された場合、
         /// その Renderer を最初の編集対象として自動登録する。

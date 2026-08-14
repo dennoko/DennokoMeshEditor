@@ -12,6 +12,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private SerializedProperty _mirror;
         private SerializedProperty _mirrorAxis;
         private SerializedProperty _bakeAsBlendShape;
+        private SerializedProperty _blendShapeName;
 
         // バージョン表記 + 更新チェックの結果。State は保持せず表示のたびに
         // 「現在のローカル版 vs 取得済みの最新版」で再計算した値を受け取る。
@@ -67,6 +68,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             _mirror = serializedObject.FindProperty("mirror");
             _mirrorAxis = serializedObject.FindProperty("mirrorAxis");
             _bakeAsBlendShape = serializedObject.FindProperty("bakeAsBlendShape");
+            _blendShapeName = serializedObject.FindProperty("blendShapeName");
 
             // 前回の取得結果を反映しつつ、未取得／前回エラーなら取得を開始する
             //（要否の判定は StartCheckBackgroundTask 内で行う）。Inspector を選び直す
@@ -412,6 +414,15 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             EditorGUILayout.PropertyField(_bakeAsBlendShape,
                 new GUIContent("シェイプキーとして追加", "ON にすると元の形状を保ったまま、編集分をシェイプキーとして追加します"));
+
+            if (_bakeAsBlendShape.boolValue)
+            {
+                using (new EditorGUI.IndentLevelScope())
+                {
+                    EditorGUILayout.PropertyField(_blendShapeName,
+                        new GUIContent("シェイプキー名", "追加するシェイプキーの名前。空の場合は元メッシュ名に _edited を付与した名前になります"));
+                }
+            }
 
             EditorGUILayout.HelpBox(
                 "元メッシュと同じフォルダに _edited を付けた名前で書き出します。"

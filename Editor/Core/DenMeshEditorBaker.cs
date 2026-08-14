@@ -42,8 +42,12 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
                 var baseName = MakeBaseName(source.name);
 
+                var shapeName = string.IsNullOrWhiteSpace(component.blendShapeName)
+                    ? MakeShapeName(source, baseName)
+                    : MakeShapeName(source, component.blendShapeName.Trim());
+
                 var mesh = component.bakeAsBlendShape
-                    ? MeshDeltaApplier.CreateWithBlendShape(source, edit, MakeShapeName(source, baseName))
+                    ? MeshDeltaApplier.CreateWithBlendShape(source, edit, shapeName)
                     : MeshDeltaApplier.CreateEdited(source, edit);
 
                 if (mesh == null)
