@@ -134,12 +134,21 @@ namespace Dennokoworks.DenMeshEditor.Editor
             return edit != null && Map.TryGetValue(edit, out deltas);
         }
 
-        internal static void Clear()
+        /// <summary>
+        /// 未確定データを捨てる。実際に捨てて <see cref="Invalidate"/> まで行った場合は true。
+        ///
+        /// 戻り値があるのは、呼び出し側が「捨てるものが無くても通知だけはしたい」場合に
+        /// <see cref="Invalidate"/> を二重に呼ばずに済ませるため。二重に呼ぶと
+        /// <see cref="RequestSync"/> の間引き待ちが余分に 1 回積まれ、下流上書き構成では
+        /// 何も変わっていないのに 50ms 後にもう一度パイプラインが作り直される。
+        /// </summary>
+        internal static bool Clear()
         {
-            if (Map.Count == 0) return;
+            if (Map.Count == 0) return false;
 
             Map.Clear();
             Invalidate();
+            return true;
         }
     }
 }

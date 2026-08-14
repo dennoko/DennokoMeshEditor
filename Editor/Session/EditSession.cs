@@ -95,12 +95,12 @@ namespace Dennokoworks.DenMeshEditor.Editor
         {
             if (_active == null) return;
 
-            // 巻き戻し後の状態と食い違う未確定データを捨て、プレビューへ更新を促す。
-            // パイプラインの再構築を挟まず、生成済みメッシュの頂点だけが書き換わる経路
-            ClearLiveEdits();
-
-            // 作業状態の作り直しは次のエディタ更新まで遅らせる。Ctrl+Z を押しっぱなしにして
-            // 同一フレームに複数回届いても、重い作り直しは 1 回で済む
+            // 未確定データの破棄もプレビューへの通知も、作業状態の作り直しと一緒に
+            // 次のエディタ更新へ回す（実処理は ResyncFromComponent）。
+            //
+            // Ctrl+Z を押しっぱなしにすると同一フレームに複数回届く。ここで直接
+            // ClearLiveEdits を呼ぶと、そのたびに LiveEdits.Invalidate が走り、
+            // 下流上書き構成では 50ms ごとのパイプライン再構築が undo の回数だけ積まれる。
             _active._resyncPending = true;
         }
 
@@ -267,7 +267,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 return;
             }
 
-            LiveEdits.Clear();
+            // 巻き戻し後の状態と食い違う未確定データを捨て、プレビューへ更新を促す。
+            // パイプラインの再構築を挟まず、生成済みメッシュの頂点だけが書き換わる経路
+            ClearLiveEdits();
+
             _dragging = false;
             _handleGrabbed = false;
             _hasPendingRadius = false;
@@ -653,8 +656,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// </summary>
         private static void ClearLiveEdits()
         {
-            LiveEdits.Clear();
-            LiveEdits.Invalidate();
+            // Clear() は捨てるものがあったときだけ通知する。両方を無条件に呼ぶと
+            // 通知が二重になり、下流上書き構成では間引き待ちが 1 回余分に積まれて
+            // 何も変わっていないのに 50ms 後にもう一度パイプラインが作り直される
+            if (!LiveEdits.Clear()) LiveEdits.Invalidate();
         }
     }
 }

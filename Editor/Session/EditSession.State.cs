@@ -133,6 +133,13 @@ namespace Dennokoworks.DenMeshEditor.Editor
         }
 
         private readonly List<TargetState> _targets = new List<TargetState>();
+
+        /// <summary>
+        /// <see cref="SyncTargetList"/> が使い回す作業リスト。
+        /// Refresh は 0.1 秒ごとに走るので、毎回 List を確保しない。
+        /// </summary>
+        private readonly List<MeshEdit> _wantedEdits = new List<MeshEdit>();
+
         private readonly List<Influence> _influences = new List<Influence>();
         private readonly List<Candidate> _candidates = new List<Candidate>();
         private readonly List<TriangleRef> _nearbyTriangles = new List<TriangleRef>();
@@ -317,7 +324,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// <summary>対象リストを作り直したら true。</summary>
         private bool SyncTargetList()
         {
-            var wanted = new List<MeshEdit>();
+            var wanted = _wantedEdits;
+            wanted.Clear();
+
             foreach (var edit in _component.edits)
             {
                 if (edit?.target == null) continue;
@@ -325,17 +334,31 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 wanted.Add(edit);
             }
 
+            // 作り直すかどうかは Renderer の顔ぶれだけで決める。
+            //
+            // Undo / Redo・Prefab の巻き戻し・ドメインリロードでは、編集対象が何も
+            // 変わっていなくても <see cref="MeshEdit"/> がデシリアライズされて別インスタンスに
+            // なりうる。ここで参照の同一性まで求めると、そのたびに TargetState が全破棄され、
+            //   - ボーンウェイト（頂点数 × 32 バイト）とバインドポーズの取り直し
+            //   - 全サブメッシュの三角形インデックスの取り直し
+            //   - BakeScratch の破棄と再確保（＝次の BakeMesh がバッファ確保込みになる）
+            //   - 遮蔽判定グリッドの破棄と、選択の解除・復元
+            // が発生する。対象そのものは変わっていないので、参照の貼り替えだけで足りる。
             if (_targets.Count == wanted.Count)
             {
                 var same = true;
                 for (var i = 0; i < wanted.Count; i++)
                 {
-                    if (_targets[i].Original == wanted[i].target && _targets[i].Edit == wanted[i]) continue;
+                    if (_targets[i].Original == wanted[i].target) continue;
                     same = false;
                     break;
                 }
 
-                if (same) return false;
+                if (same)
+                {
+                    RebindEdits(wanted);
+                    return false;
+                }
             }
 
             DisposeTargets();
@@ -354,6 +377,30 @@ namespace Dennokoworks.DenMeshEditor.Editor
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// <see cref="MeshEdit"/> のインスタンスだけが差し替わった場合に、
+        /// <see cref="TargetState"/> を保ったまま参照と作業状態を貼り替える。
+        ///
+        /// <paramref name="wanted"/> は <see cref="_targets"/> と同じ並びであることが
+        /// 呼び出し側で確認済み（Renderer が位置ごとに一致している）。
+        /// </summary>
+        private void RebindEdits(List<MeshEdit> wanted)
+        {
+            for (var i = 0; i < wanted.Count; i++)
+            {
+                var target = _targets[i];
+                var edit = wanted[i];
+                if (ReferenceEquals(target.Edit, edit)) continue;
+
+                // 古いインスタンス宛の未確定データはもう辿れない。
+                // 巻き戻った内容を作業状態の基準として取り直す
+                target.Edit = edit;
+                edit.CopyTo(target.Working);
+                CopyDeltas(target.Working, target.Snapshot);
+                target.Touched = false;
+            }
         }
 
         /// <summary>

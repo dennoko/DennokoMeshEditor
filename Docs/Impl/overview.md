@@ -623,7 +623,9 @@ handlePosition = baseWorld + skin · delta
 
 `baseWorld` は選択頂点の「自分のデルタを除いた」ワールド位置、`skin` は選択時のスキニング行列。どちらも Undo では変化しない（Undo が変えるのはデルタだけ）ので、選択時に控えておけば、巻き戻ったデルタを入れるだけで正しい位置が出る。
 
-もう一点、**選択そのものが落ちる**経路がある。Undo は `List<MeshEdit>` をシリアライズ経由で復元するため `MeshEdit` のインスタンスが差し替わることがあり、そうなると `SyncTargetList` が参照比較で不一致を検出して対象を作り直し、`ClearSelection` を呼ぶ。Undo で変わるのはデルタだけで「どの頂点を掴んでいるか」は変わらないので、(Renderer, 頂点番号) を控えておいて選び直す。
+もう一点、**選択そのものが落ちる**経路がある。`SyncTargetList` が対象を作り直すと `ClearSelection` が走る。Undo で変わるのはデルタだけで「どの頂点を掴んでいるか」は変わらないので、(Renderer, 頂点番号) を控えておいて選び直す。
+
+なお Undo は `List<MeshEdit>` をシリアライズ経由で復元するため `MeshEdit` のインスタンスが差し替わることがあるが、それだけでは対象を作り直さない（→ 第 6 版）。この復元経路は編集対象の増減にも備えて残してある。
 
 **フィルタ順序**：Scale Adjuster より後に評価される必要がある。NDMF パスの宣言で `.AfterPlugin("nadena.dev.modular-avatar")` 等により順序を明示する。
 
@@ -873,6 +875,35 @@ if (serializedObject.ApplyModifiedProperties() && EditSession.IsActive(component
 下流フィルタ併用時（`DownstreamGuard` のラッチ成立時）は、ドラッグ中の更新を `LiveEdits.SyncedVersion` 経由のパイプライン再構築として流している（→ 9.4.3）。つまり**ドラッグのたびに必ずメッシュが作り直され、確定時には必ず破棄済み**になる。結果、`hasChanges` が false のまま `ClearLiveEdits()` だけが走り、未確定デルタが捨てられて元の形状に戻っていた（プレビューには出るのに保存されない）。
 
 対策として、メッシュを読めたときに頂点数を `TargetState.VertexCount` へ控え、確定時は `ResolveVertexCount`（生きたメッシュ → 控えた頂点数 → 元 Renderer のメッシュ）で解決する。記録するのがプロキシの頂点数であること（→ 12 の決定事項）は維持される。
+
+#### Undo の重さ（第 6 版）
+
+**［中］Undo が引っ掛かる**
+
+3 点を潰した。
+
+**1. `MeshEdit` のインスタンス差し替えで対象を全破棄していた**
+
+`SyncTargetList` が `_targets[i].Edit == wanted[i]` と参照の同一性まで求めていた。Undo / Prefab の巻き戻し・ドメインリロードでは、編集対象が何も変わっていなくても `MeshEdit` がデシリアライズされて別インスタンスになりうる。そのたびに `TargetState` が全破棄され、ボーンウェイト（頂点数 × 32 バイト）とバインドポーズの取り直し、全サブメッシュの三角形インデックスの取り直し、`BakeScratch` の破棄と再確保（次の `BakeMesh` がバッファ確保込みになる）、遮蔽判定グリッドの破棄、選択の解除と復元が走っていた。
+
+判定を Renderer の顔ぶれだけにし、インスタンスの差し替えは `RebindEdits` で参照と作業状態の貼り替えだけを行う。これにより「Undo で選択が落ちて選び直す」経路（→ 6.4）も通常は通らなくなる（経路自体は対象の増減に備えて残す）。
+
+なお `BakeMesh` そのものは `Refresh` のたび（0.1 秒ごと）に既に走っており、Undo 固有のコストではない。ここで減るのは上に挙げた確保・コピーと、それに伴う GC。
+
+**2. Undo 連打でパイプライン再構築が回数分積まれていた**
+
+`OnUndoRedoPerformed` が `ClearLiveEdits()` を直接呼んでいたため、Ctrl+Z の押しっぱなしで同一フレームに複数回届くと、その回数だけ `LiveEdits.Invalidate` が走っていた。作業状態の作り直しは `_resyncPending` で 1 フレーム 1 回にまとめてあったのに、通知だけが素通りしていた形。コールバックはフラグを立てるだけにし、`ClearLiveEdits()` は `ResyncFromComponent` へ移した。
+
+**3. `ClearLiveEdits` の通知が二重だった**
+
+`LiveEdits.Clear()` は中身があったときに自分で `Invalidate` を呼ぶ。`ClearLiveEdits` はそのあと無条件にもう一度 `Invalidate` していたため、下流上書き構成では `RequestSync` の間引き待ち（`_syncPending`）が 1 回余分に積まれ、**何も変わっていないのに 50ms 後にもう一度パイプラインが作り直されていた**。これは Undo だけでなくドラッグ確定のたびに起きていた。`Clear()` に「実際に通知したか」を返させ、通知は 1 回に絞る。
+
+**残る要因（本ツール側では潰せない）**
+
+- アバターが Prefab インスタンスの場合、Unity が `ObjectChangeKind.UpdatePrefabInstances` を出すと NDMF は `ShadowHierarchy.InvalidateTree`（＝ `ForceInvalidate`）を実行する。9.4.3 で組んだフィンガープリント監視はこれを一切防げず、パイプライン全体が作り直される
+- `Undo.RecordObject` はコンポーネント全体（`byte[] blob` を含む）をスナップショットするため、巻き戻しコスト自体が編集頂点数に比例する
+
+いずれも疑わしい場合は Profiler（Editor モード）で `ChangeStreamMonitor.OnChange` / `PropertyMonitor.CheckAllObjects` / `IRenderFilter.Instantiate` を見れば切り分けられる。
 
 ### 未検証項目（Unity 上で確認が必要）
 
