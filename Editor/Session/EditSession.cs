@@ -78,6 +78,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
             EditorSceneManager.sceneClosing += OnSceneClosing;
             Undo.undoRedoPerformed += OnUndoRedoPerformed;
+            EditorApplication.quitting += End;
         }
 
         private static void OnPlayModeStateChanged(PlayModeStateChange change)
@@ -117,6 +118,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
             _toolsHiddenBefore = Tools.hidden;
             Tools.hidden = true;
 
+            // 編集前の形状で描かれる選択アウトラインが編集結果に重なるのを避ける
+            SelectionOutline.Suppress();
+
             // プレビューフィルタへ「編集開始」を伝え、プロキシを生成させる
             ActiveComponent.Value = component;
 
@@ -134,6 +138,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             // 開始前の状態へ戻す（ユーザーが自分でツールを隠していた場合を潰さない）
             Tools.hidden = _toolsHiddenBefore;
+            SelectionOutline.Restore();
             ActiveComponent.Value = null;
 
             UnityEditorInternal.InternalEditorUtility.RepaintAllViews();
