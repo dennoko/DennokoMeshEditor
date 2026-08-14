@@ -70,7 +70,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
                 foreach (var asset in created)
                 {
-                    Debug.Log($"[Den Mesh Editor] ベイクしました: {AssetDatabase.GetAssetPath(asset)}", asset);
+                    Debug.Log($"[Dennoko Mesh Editor] ベイクしました: {AssetDatabase.GetAssetPath(asset)}", asset);
                 }
 
                 // Bake は OnInspectorGUI の実行中に呼ばれる。その場で Selection を変えると
@@ -89,12 +89,12 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             foreach (var message in skipped)
             {
-                Debug.LogWarning($"[Den Mesh Editor] ベイクをスキップしました — {message}", component);
+                Debug.LogWarning($"[Dennoko Mesh Editor] ベイクをスキップしました — {message}", component);
             }
 
             if (created.Count == 0 && skipped.Count == 0)
             {
-                Debug.LogWarning("[Den Mesh Editor] ベイク対象がありません（編集データが空です）。", component);
+                Debug.LogWarning("[Dennoko Mesh Editor] ベイク対象がありません（編集データが空です）。", component);
             }
         }
 

@@ -33,17 +33,17 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
         // チェック先（このプロジェクトのリモートリポジトリ）
         private const string RepoOwner = "dennoko";
-        private const string RepoName = "DenMeshEditor";
+        private const string RepoName = "DennokoMeshEditor";
         private const string RepoBranch = "main";
         private const string VersionFilePath = "version.json";
 
         // セッションキー。State（比較結果）は保存しない — ローカル版が後から正しく解決され得るため、
         // 表示のたびに「保存した最新版 vs 現在のローカル版」で更新有無を再計算する。
-        private const string VerCheckDoneKey = "DenMeshEditor_VerCheck_Done";
-        private const string VerCheckErrorKey = "DenMeshEditor_VerCheck_Error";
-        private const string VerCheckLatestKey = "DenMeshEditor_VerCheck_Latest";
-        private const string VerCheckUrlKey = "DenMeshEditor_VerCheck_Url";
-        private const string VerCheckMessageKey = "DenMeshEditor_VerCheck_Message";
+        private const string VerCheckDoneKey = "DennokoMeshEditor_VerCheck_Done";
+        private const string VerCheckErrorKey = "DennokoMeshEditor_VerCheck_Error";
+        private const string VerCheckLatestKey = "DennokoMeshEditor_VerCheck_Latest";
+        private const string VerCheckUrlKey = "DennokoMeshEditor_VerCheck_Url";
+        private const string VerCheckMessageKey = "DennokoMeshEditor_VerCheck_Message";
 
         static DenMeshEditorVersion()
         {
@@ -170,7 +170,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 if (!path.EndsWith("/version.json", StringComparison.OrdinalIgnoreCase)) continue;
 
                 var dir = path.Substring(0, path.Length - "/version.json".Length);
-                if (!File.Exists(dir + "/Editor/DenMeshEditorVersion.cs")) continue;
+                if (!File.Exists(Path.Combine(dir, "Editor", "Version", "DenMeshEditorVersion.cs")) &&
+                    !File.Exists(Path.Combine(dir, "Editor", "DenMeshEditorVersion.cs")) &&
+                    !File.Exists(Path.Combine(dir, "Runtime", "DenMeshEditor.cs"))) continue;
 
                 v = TryReadVersion(path);
                 if (v != null) return v;
@@ -189,7 +191,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             }
             catch (Exception e)
             {
-                Debug.LogWarning($"[DenMeshEditor] version.json の読み込みに失敗しました ({path}): {e.Message}");
+                Debug.LogWarning($"[Dennoko Mesh Editor] version.json の読み込みに失敗しました ({path}): {e.Message}");
             }
             return null;
         }

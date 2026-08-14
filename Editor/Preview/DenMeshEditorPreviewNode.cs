@@ -164,7 +164,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 {
                     entry.WarnedNotReadable = true;
                     Debug.LogWarning(
-                        $"[Den Mesh Editor] {original.name} のメッシュ「{entry.Source.name}」から頂点を読み取れませんでした。"
+                        $"[Dennoko Mesh Editor] {original.name} のメッシュ「{entry.Source.name}」から頂点を読み取れませんでした。"
                         + "インポート設定の Read/Write Enabled を有効にしてください。",
                         original);
                 }
@@ -231,7 +231,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             {
                 // IRenderFilter の規約：メッシュは新規インスタンスを作り、Dispose で破棄する
                 entry.Generated = Object.Instantiate(entry.Source);
-                entry.Generated.name = entry.Source.name + " (Den Mesh Editor)";
+                entry.Generated.name = entry.Source.name + " (Dennoko Mesh Editor)";
                 entry.Generated.hideFlags = HideFlags.HideAndDontSave;
 
                 // 毎フレーム SetVertices するので動的メッシュとして確保させる

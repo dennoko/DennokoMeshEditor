@@ -81,7 +81,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             catch (Exception e)
             {
                 // URL 組み立て自体の失敗はブランチを変えても直らないため即エラー
-                Debug.LogWarning($"[DenMeshEditor] version check: request build failed: {e.Message}");
+                Debug.LogWarning($"[Dennoko Mesh Editor] version check: request build failed: {e.Message}");
                 onResult(Error(localVersion));
                 return;
             }
@@ -96,7 +96,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 }
                 catch (Exception e)
                 {
-                    Debug.LogWarning($"[DenMeshEditor] version check: callback failed: {e.Message}");
+                    Debug.LogWarning($"[Dennoko Mesh Editor] version check: callback failed: {e.Message}");
                     result = Error(localVersion);
                 }
                 finally
@@ -128,14 +128,14 @@ namespace Dennokoworks.DenMeshEditor.Editor
             // 切り分け材料になる（owner/repo/branch・push 有無・回線）。
             if (hasError)
             {
-                Debug.LogWarning($"[DenMeshEditor] version check 取得失敗: url={url} httpCode={req.responseCode} error={req.error}");
+                Debug.LogWarning($"[Dennoko Mesh Editor] version check 取得失敗: url={url} httpCode={req.responseCode} error={req.error}");
                 return Error(localVersion);
             }
 
             var json = req.downloadHandler != null ? req.downloadHandler.text : null;
             if (string.IsNullOrEmpty(json))
             {
-                Debug.LogWarning($"[DenMeshEditor] version check 取得失敗: レスポンスが空。url={url} httpCode={req.responseCode}");
+                Debug.LogWarning($"[Dennoko Mesh Editor] version check 取得失敗: レスポンスが空。url={url} httpCode={req.responseCode}");
                 return Error(localVersion);
             }
 
@@ -143,13 +143,13 @@ namespace Dennokoworks.DenMeshEditor.Editor
             try { info = JsonUtility.FromJson<VersionInfo>(json); }
             catch (Exception e)
             {
-                Debug.LogWarning($"[DenMeshEditor] version check 取得失敗: JSON パース失敗: {e.Message} url={url}");
+                Debug.LogWarning($"[Dennoko Mesh Editor] version check 取得失敗: JSON パース失敗: {e.Message} url={url}");
                 return Error(localVersion);
             }
 
             if (info == null || string.IsNullOrEmpty(info.version))
             {
-                Debug.LogWarning($"[DenMeshEditor] version check 取得失敗: version フィールドが空。url={url}");
+                Debug.LogWarning($"[Dennoko Mesh Editor] version check 取得失敗: version フィールドが空。url={url}");
                 return Error(localVersion);
             }
 

@@ -90,7 +90,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             EditorGUILayout.BeginHorizontal();
             GUILayout.Space(8);
-            GUILayout.Label("Den Mesh Editor — 編集中", EditorStyles.boldLabel);
+            GUILayout.Label("Dennoko Mesh Editor — 編集中", EditorStyles.boldLabel);
             GUILayout.FlexibleSpace();
             GUILayout.Label("⠿", EditorStyles.miniLabel);
             GUILayout.Space(8);
@@ -115,10 +115,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 {
                     Undo.IncrementCurrentGroup();
                     _settingsUndoGroup = Undo.GetCurrentGroup();
-                    Undo.SetCurrentGroupName("Den Mesh Editor Settings");
+                    Undo.SetCurrentGroupName("Dennoko Mesh Editor Settings");
                 }
 
-                Undo.RecordObject(_component, "Den Mesh Editor Settings");
+                Undo.RecordObject(_component, "Dennoko Mesh Editor Settings");
                 _hasPendingRadius = false;
                 _component.brushRadius = radius;
                 _component.falloff = falloff;
@@ -150,7 +150,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             var buttonText = mirrorActive ? "ミラー: 有効 (ON)" : "ミラー: 無効 (OFF)";
             if (GUILayout.Button(buttonText, GUILayout.Height(28)))
             {
-                Undo.RecordObject(_component, "Den Mesh Editor Mirror Toggle");
+                Undo.RecordObject(_component, "Dennoko Mesh Editor Mirror Toggle");
                 _component.mirror = !mirrorActive;
                 EditorUtility.SetDirty(_component);
 

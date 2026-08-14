@@ -602,10 +602,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
             // グループが自動で進むのは限られたタイミングだけなので、明示的に切らないと
             // 複数回のドラッグが 1 段に潰れ、Ctrl+Z で一気に巻き戻る。
             Undo.IncrementCurrentGroup();
-            Undo.SetCurrentGroupName("Den Mesh Editor");
+            Undo.SetCurrentGroupName("Dennoko Mesh Editor");
 
             // 記録より先に半径を書くと変更前の値が取れなくなるので、記録が先
-            Undo.RecordObject(_component, "Den Mesh Editor");
+            Undo.RecordObject(_component, "Dennoko Mesh Editor");
 
             if (_hasPendingRadius)
             {

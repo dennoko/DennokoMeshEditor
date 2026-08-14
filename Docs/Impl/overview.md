@@ -244,7 +244,7 @@ public class DenMeshEditor : MonoBehaviour
 姉妹ツール（NdmfObjectActivater 等）の規約に揃える。
 
 ```
-Assets/dennokoworks/DenMeshEditor/
+Assets/dennokoworks/DennokoMeshEditor/
 ├── Runtime/
 │   ├── dennokoworks.DenMeshEditor.Runtime.asmdef
 │   └── DenMeshEditor.cs                  … MonoBehaviour（データ保持のみ）
@@ -262,7 +262,7 @@ Assets/dennokoworks/DenMeshEditor/
 
 - 名前空間：`Dennokoworks.DenMeshEditor` / `Dennokoworks.DenMeshEditor.Editor`
 - NDMF プラグイン `QualifiedName`：`dennokoworks.den-mesh-editor`
-- `DisplayName`：`Den Mesh Editor`
+- `DisplayName`：`Dennoko Mesh Editor`
 
 **Runtime アセンブリはデータ保持に徹する。**編集ロジック・プレビュー・ベイクはすべて Editor 側に置く。これはビルド成果物を軽くするためであり、「軽量」というコンセプトの実装上の担保でもある。
 
@@ -587,9 +587,9 @@ foreach (var c in components) ObserveEdits(context, c);
 
 ```csharp
 Undo.IncrementCurrentGroup();               // 直前の操作と切り離す
-Undo.SetCurrentGroupName("Den Mesh Editor");
+Undo.SetCurrentGroupName("Dennoko Mesh Editor");
 
-Undo.RecordObject(_component, "Den Mesh Editor");
+Undo.RecordObject(_component, "Dennoko Mesh Editor");
 … 半径とデルタを書き込む …
 EditorUtility.SetDirty(_component);
 

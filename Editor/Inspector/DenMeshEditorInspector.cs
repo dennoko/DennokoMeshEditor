@@ -19,7 +19,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private DennokoVersionChecker.Result _versionResult;
         private static GUIStyle _versionLinkStyle;
 
-        [MenuItem("GameObject/dennokoworks/Den Mesh Editor", false, 20)]
+        [MenuItem("GameObject/dennokoworks/Dennoko Mesh Editor", false, 20)]
         private static void AddDenMeshEditorMenuItem(MenuCommand menuCommand)
         {
             var target = menuCommand.context as GameObject;
@@ -235,7 +235,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 serializedObject.ApplyModifiedProperties();
 
                 var component = (DenMeshEditor)target;
-                Undo.RecordObject(component, "Add Den Mesh Editor Target");
+                Undo.RecordObject(component, "Add Dennoko Mesh Editor Target");
                 component.edits.Add(new MeshEdit());
                 EditorUtility.SetDirty(component);
 
@@ -452,12 +452,12 @@ namespace Dennokoworks.DenMeshEditor.Editor
             {
                 if (GUILayout.Button("すべての編集をクリア"))
                 {
-                    if (EditorUtility.DisplayDialog("Den Mesh Editor",
+                    if (EditorUtility.DisplayDialog("Dennoko Mesh Editor",
                             "すべての編集内容を破棄します。よろしいですか？", "クリア", "キャンセル"))
                     {
                         EditSession.End();
 
-                        Undo.RecordObject(component, "Clear Den Mesh Editor Edits");
+                        Undo.RecordObject(component, "Clear Dennoko Mesh Editor Edits");
                         foreach (var edit in component.edits)
                         {
                             edit?.Clear();

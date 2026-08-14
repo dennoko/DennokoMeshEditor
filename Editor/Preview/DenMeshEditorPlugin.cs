@@ -16,7 +16,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
     internal class DenMeshEditorPlugin : Plugin<DenMeshEditorPlugin>
     {
         public override string QualifiedName => "dennokoworks.den-mesh-editor";
-        public override string DisplayName => "Den Mesh Editor";
+        public override string DisplayName => "Dennoko Mesh Editor";
 
         protected override void Configure()
         {
@@ -51,7 +51,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
                     if (!edit.target.transform.IsChildOf(context.AvatarRootTransform))
                     {
                         Debug.LogWarning(
-                            $"[Den Mesh Editor] {edit.target.name} はアバター配下にないため適用をスキップしました。"
+                            $"[Dennoko Mesh Editor] {edit.target.name} はアバター配下にないため適用をスキップしました。"
                             + "編集対象はアバタールートの子孫にある Renderer を指定してください。",
                             component);
                         continue;
@@ -83,7 +83,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             foreach (var message in skipped)
             {
-                Debug.LogWarning($"[Den Mesh Editor] {target.name}: {message}", target);
+                Debug.LogWarning($"[Dennoko Mesh Editor] {target.name}: {message}", target);
             }
 
             if (merged == null) return;

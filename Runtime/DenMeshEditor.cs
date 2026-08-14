@@ -10,7 +10,7 @@ namespace Dennokoworks.DenMeshEditor
     /// NDMF プレビューへの反映とビルド時の適用が行われる。元メッシュアセットは書き換えない。
     /// </summary>
     [DisallowMultipleComponent]
-    [AddComponentMenu("dennokoworks/Den Mesh Editor")]
+    [AddComponentMenu("dennokoworks/Dennoko Mesh Editor")]
     public class DenMeshEditor : MonoBehaviour
 #if DEN_MESH_EDITOR_VRCSDK
         , VRC.SDKBase.IEditorOnly

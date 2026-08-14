@@ -1,4 +1,4 @@
-# DenMeshEditor 使い方
+# Dennoko Mesh Editor 使い方
 
 VRChat アバター改変向けの、非破壊メッシュ編集ツールです。
 頂点を掴んで動かすだけで、服の食い込みや体型を調整できます。元のメッシュファイルは書き換えません。
@@ -14,7 +14,7 @@ VRChat アバター改変向けの、非破壊メッシュ編集ツールです�
 ## Quick Start
 
 ### 1. コンポーネントの追加
-ヒエラルキーで編集したいメッシュを右クリックし、`dennokoworks > Den Mesh Editor` を選択します。
+ヒエラルキーで編集したいメッシュを右クリックし、`dennokoworks > Dennoko Mesh Editor` を選択します。
 
 ### 2. 編集モードの開始
 Inspector の **「編集」** ボタンを押します。※メッシュにコンポーネントを追加した場合は自動で編集モードに入ります。
@@ -34,7 +34,7 @@ Esc キーを押すか、Inspectorで「編集」ボタンを押します。
 ### 1. コンポーネントを付ける
 
 ヒエラルキー上で編集したいメッシュ（SkinnedMeshRenderer / MeshRenderer）を持つオブジェクトを右クリックし、
-`dennokoworks > Den Mesh Editor` を選択します（または Inspector の `Add Component` から追加します）。
+`dennokoworks > Dennoko Mesh Editor` を選択します（または Inspector の `Add Component` から追加します）。
 
 - **Renderer を持つオブジェクトに右クリックから追加した場合：**
   そのメッシュが自動的に編集対象として登録され、**即座に編集モードが有効化**されます。
