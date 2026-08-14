@@ -14,6 +14,17 @@ namespace Dennokoworks.DenMeshEditor.Editor
             public Renderer Proxy;
             public SkinnedMeshRenderer Skinned;
             public Mesh Mesh;
+
+            /// <summary>
+            /// 最後に読めたメッシュの頂点数。
+            ///
+            /// <see cref="Mesh"/> はプレビューパイプラインが所有するインスタンスで、
+            /// パイプラインが作り直されると破棄される（＝ Unity の null 比較で null になる）。
+            /// ドラッグ中は <see cref="Refresh"/> を止めているため、確定時には
+            /// 破棄済みの参照しか残っていないことがある。頂点数だけは控えておく。
+            /// </summary>
+            public int VertexCount;
+
             public Mesh BakeScratch;
             public Vector3[] WorldVertices;
             public MeshEdit Edit;
@@ -220,6 +231,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 // プレビュー用メッシュはパイプライン再構築のたびに作り直されるため、
                 // プロキシが同じでもメッシュのインスタンスは変わりうる。毎回読み直す。
                 var mesh = MeshDeltaApplier.GetSharedMesh(proxy);
+
+                // 確定時にメッシュが破棄済みでも頂点数を書けるよう、読めたときに控えておく
+                if (mesh != null) target.VertexCount = mesh.vertexCount;
+
                 if (target.Mesh != mesh)
                 {
                     target.Mesh = mesh;
@@ -280,6 +295,23 @@ namespace Dennokoworks.DenMeshEditor.Editor
             _showFallbackWarning = _fallbackSince >= 0
                                    && EditorApplication.timeSinceStartup - _fallbackSince
                                    > FallbackWarningDelaySeconds;
+        }
+
+        /// <summary>
+        /// 編集データに添える頂点数を決める。取得できなければ 0。
+        ///
+        /// プレビュー用メッシュはパイプライン再構築のたびに破棄されるため、
+        /// <see cref="TargetState.Mesh"/> をそのまま参照すると確定時に null になっていることがある
+        /// （下流フィルタ併用時はドラッグ中に毎回作り直されるので、ほぼ必ずそうなる）。
+        /// 控えておいた頂点数、それも無ければ元 Renderer のメッシュへ順に退避する。
+        /// </summary>
+        private static int ResolveVertexCount(TargetState target)
+        {
+            if (target.Mesh != null) return target.Mesh.vertexCount;
+            if (target.VertexCount > 0) return target.VertexCount;
+
+            var mesh = MeshDeltaApplier.GetSharedMesh(target.Original);
+            return mesh != null ? mesh.vertexCount : 0;
         }
 
         /// <summary>対象リストを作り直したら true。</summary>

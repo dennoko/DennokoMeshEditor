@@ -587,7 +587,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             var hasChanges = _hasPendingRadius;
             foreach (var target in _targets)
             {
-                if (!target.Touched || target.Mesh == null) continue;
+                if (!target.Touched || ResolveVertexCount(target) <= 0) continue;
                 hasChanges = true;
                 break;
             }
@@ -615,8 +615,12 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             foreach (var target in _targets)
             {
-                if (!target.Touched || target.Mesh == null) continue;
-                target.Edit.SetFrom(target.Working, target.Mesh.vertexCount);
+                if (!target.Touched) continue;
+
+                var vertexCount = ResolveVertexCount(target);
+                if (vertexCount <= 0) continue;
+
+                target.Edit.SetFrom(target.Working, vertexCount);
             }
 
             EditorUtility.SetDirty(_component);
