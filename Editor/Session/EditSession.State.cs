@@ -153,10 +153,23 @@ namespace Dennokoworks.DenMeshEditor.Editor
             var geometryChanged = SyncTargetList();
 
             var anyFallback = false;
+            var anyVertexCountMismatch = false;
 
             foreach (var target in _targets)
             {
                 var proxy = ProxyRegistry.ResolveOrOriginal(target.Original, out var usingProxy);
+
+                // 下流の NDMF フィルタが頂点数を変えている場合、プロキシから読んだ頂点位置と
+                // 元メッシュのインデックスで保存するデルタの対応が取れない。
+                // そのまま編集させると無関係な頂点が動くので、プロキシを捨てて元 Renderer へ退避する。
+                // （Avatar Optimizer の Remove Mesh 系は三角形インデックスしか書き換えないので該当しない）
+                if (usingProxy && DownstreamGuard.HasVertexCountMismatch(target.Original))
+                {
+                    proxy = target.Original;
+                    usingProxy = false;
+                    anyVertexCountMismatch = true;
+                }
+
                 if (!usingProxy) anyFallback = true;
 
                 if (target.Proxy != proxy)
@@ -212,6 +225,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             }
 
             AnyFallback = anyFallback;
+            AnyVertexCountMismatch = anyVertexCountMismatch;
 
             // 編集開始直後やパイプライン再構築の数フレームは、正常でも一時的に
             // フォールバック状態になる。状態が続いたときにだけ警告する（明滅させない）

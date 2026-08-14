@@ -82,14 +82,59 @@ namespace Dennokoworks.DenMeshEditor.Editor
             // シーン走査も、無関係なコンポーネントの監視も行わない
             var components = group.GetData<List<DenMeshEditor>>() ?? new List<DenMeshEditor>();
 
+            ObserveNodeInputs(context, components, group.Renderers);
+
+            var node = new DenMeshEditorPreviewNode(proxyPairs, components);
+            return Task.FromResult<IRenderFilterNode>(node);
+        }
+
+        /// <summary>
+        /// ノード 1 つ分の入力を監視する。
+        ///
+        /// <see cref="DenMeshEditorPreviewNode.Refresh"/> がノードを再利用する場合は
+        /// <see cref="Instantiate"/> が呼ばれないため、そちらからも同じ監視を張り直す必要がある。
+        /// 張り忘れるとノードが二度と無効化されなくなるので、経路を 1 つにまとめておく。
+        /// </summary>
+        internal static void ObserveNodeInputs(
+            ComputeContext context,
+            IEnumerable<DenMeshEditor> components,
+            IEnumerable<Renderer> originals)
+        {
             foreach (var component in components)
             {
                 if (component == null) continue;
                 ObserveEdits(context, component);
             }
 
-            var node = new DenMeshEditorPreviewNode(proxyPairs, components);
-            return Task.FromResult<IRenderFilterNode>(node);
+            ObserveDownstreamSync(context, originals);
+        }
+
+        /// <summary>
+        /// 下流フィルタに上書きされている対象では、<see cref="LiveEdits.SyncedVersion"/> を監視する。
+        ///
+        /// この経路に入ると、ドラッグ中の更新のたびにパイプラインが作り直されて重くなる。
+        /// そのため、上書きが実際に検出された対象でだけ監視を張る。検出されていない通常時は
+        /// 誰も見ていないので、<see cref="LiveEdits.Invalidate"/> はパイプラインに影響しない。
+        /// </summary>
+        private static void ObserveDownstreamSync(ComputeContext context, IEnumerable<Renderer> originals)
+        {
+            // ラッチの成立そのものをノードの再構築契機にする。
+            // これが無いと、検出した時点では誰も SyncedVersion を見ていないため
+            // 「上書きされているのに永久に無効化されない」状態で固まる
+            context.Observe(DownstreamGuard.OverrideGeneration, v => v, (a, b) => a == b);
+
+            var overridden = false;
+            foreach (var original in originals)
+            {
+                if (!DownstreamGuard.IsOverridden(original)) continue;
+
+                overridden = true;
+                break;
+            }
+
+            if (!overridden) return;
+
+            context.Observe(LiveEdits.SyncedVersion, v => v, (a, b) => a == b);
         }
 
         /// <summary>

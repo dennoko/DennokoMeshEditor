@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using nadena.dev.ndmf.preview;
+using UnityEditor;
 using UnityEngine;
 
 namespace Dennokoworks.DenMeshEditor.Editor
@@ -31,6 +33,34 @@ namespace Dennokoworks.DenMeshEditor.Editor
         internal static int Version => _version;
 
         /// <summary>
+        /// 下流フィルタに上書きされている対象がある場合に、NDMF へ変更を伝えるための値。
+        ///
+        /// 上流ノードが <c>OnFrame</c> でメッシュをその場で書き換えても、下流ノードは
+        /// 自分が <c>Instantiate</c> 時に作ったメッシュを毎フレーム代入し直すだけなので、
+        /// 書き換えは下流に届かずに捨てられる。下流まで反映させる方法は
+        /// 「ComputeContext を無効化してノードを作り直させる」しかない。
+        ///
+        /// <see cref="DenMeshEditorPreviewFilter"/> は、下流上書きが検出された対象のときだけ
+        /// この値を <c>Observe</c> する。検出されていない通常時は誰も見ていないので、
+        /// 値が変わってもパイプラインは作り直されない（従来どおりの高速パス）。
+        /// </summary>
+        internal static readonly PublishedValue<int> SyncedVersion =
+            new PublishedValue<int>(0, "DenMeshEditor.LiveEditsSyncedVersion");
+
+        /// <summary>
+        /// <see cref="SyncedVersion"/> を進める最短間隔（秒）。
+        ///
+        /// この値を進めるとプレビューパイプラインが作り直される。下流ノードは
+        /// <c>IRenderFilterNode.Refresh</c> を実装していないことが多く（Avatar Optimizer も未実装）、
+        /// その場合はノードごと作り直しになって <c>BakeMesh</c> とジョブが再実行される。
+        /// ドラッグのフレームレートそのままで叩くと重すぎるので間引く。
+        /// </summary>
+        private const double SyncIntervalSeconds = 0.05;
+
+        private static double _nextSync;
+        private static bool _syncPending;
+
+        /// <summary>
         /// プレビューを作り直す必要があることを通知する。
         /// 確定・クリア・編集終了など、編集内容が変わるすべての経路から呼ぶ。
         /// </summary>
@@ -40,6 +70,50 @@ namespace Dennokoworks.DenMeshEditor.Editor
             {
                 _version++;
             }
+
+            RequestSync();
+        }
+
+        /// <summary>
+        /// 下流上書きが検出されているときだけ、NDMF への通知を間引きながら流す。
+        /// </summary>
+        private static void RequestSync()
+        {
+            if (!DownstreamGuard.AnyOverridden) return;
+
+            var now = EditorApplication.timeSinceStartup;
+            if (now < _nextSync)
+            {
+                // 間引きで落とした最後の 1 回（＝ドラッグの最終位置）を取りこぼさないよう、
+                // 間隔が明けたところで必ず一度流す
+                if (_syncPending) return;
+
+                _syncPending = true;
+                EditorApplication.update += FlushPending;
+                return;
+            }
+
+            Sync(now);
+        }
+
+        private static void FlushPending()
+        {
+            var now = EditorApplication.timeSinceStartup;
+            if (now < _nextSync) return;
+
+            Sync(now);
+        }
+
+        private static void Sync(double now)
+        {
+            if (_syncPending)
+            {
+                EditorApplication.update -= FlushPending;
+                _syncPending = false;
+            }
+
+            _nextSync = now + SyncIntervalSeconds;
+            SyncedVersion.Value = _version;
         }
 
         /// <summary>

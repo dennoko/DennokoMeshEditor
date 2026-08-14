@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using nadena.dev.ndmf.preview;
 using UnityEditor;
 using UnityEngine;
@@ -137,6 +138,11 @@ namespace Dennokoworks.DenMeshEditor.Editor
             }
 
             if (entry.Generated != null) MeshDeltaApplier.SetSharedMesh(proxy, entry.Generated);
+
+            // 描画後に読み戻して、下流フィルタの上書きを検出させる。
+            // 編集が無くて何も代入していない場合は上流メッシュを申告する。こうしておくと
+            // 「編集を 1 つも持たない状態」でも併用構成を検出できる
+            DownstreamGuard.Expect(this, original, proxy, entry.Generated != null ? entry.Generated : entry.Source);
         }
 
         /// <summary>
@@ -248,11 +254,51 @@ namespace Dennokoworks.DenMeshEditor.Editor
             entry.Generated = null;
         }
 
+        /// <summary>
+        /// パイプライン再構築時に、生成済みメッシュを持ったまま自分自身を再利用する。
+        ///
+        /// 下流フィルタに上書きされている構成では、ドラッグ中の更新を
+        /// <see cref="LiveEdits.SyncedVersion"/> 経由のパイプライン再構築として流す。
+        /// ここで <c>null</c> を返すと、そのたびにノードごと作り直されて
+        /// 全頂点のメッシュ複製（<c>Object.Instantiate</c>）が走ってしまう。
+        /// 自分自身を返せば <c>NodeController</c> が参照カウントで寿命を管理してくれるので、
+        /// 生成済みメッシュを使い回したまま下流だけを作り直させられる
+        /// （<see cref="WhatChanged"/> が <c>Mesh</c> を返すので下流は必ず更新される）。
+        ///
+        /// プロキシの対応が変わっている場合だけは作り直す。共有状態を書き換えずに済ませる。
+        /// </summary>
+        public Task<IRenderFilterNode> Refresh(
+            IEnumerable<(Renderer, Renderer)> proxyPairs,
+            ComputeContext context,
+            RenderAspects updatedAspects)
+        {
+            // 上流のメッシュが差し替わった場合は、基準頂点から取り直した方が確実
+            if ((updatedAspects & RenderAspects.Mesh) != 0) return Task.FromResult<IRenderFilterNode>(null);
+
+            var matched = 0;
+            foreach (var (original, proxy) in proxyPairs)
+            {
+                if (original == null) continue;
+                if (!_entries.TryGetValue(original, out var entry)) return Task.FromResult<IRenderFilterNode>(null);
+                if (entry.Proxy != proxy) return Task.FromResult<IRenderFilterNode>(null);
+
+                matched++;
+            }
+
+            if (matched != _entries.Count) return Task.FromResult<IRenderFilterNode>(null);
+
+            // Instantiate を通らないので、監視は新しい ComputeContext へ張り直す
+            DenMeshEditorPreviewFilter.ObserveNodeInputs(context, _components, _entries.Keys);
+
+            return Task.FromResult<IRenderFilterNode>(this);
+        }
+
         public void Dispose()
         {
             foreach (var entry in _entries.Values)
             {
                 ProxyRegistry.Remove(entry.Original, entry.Proxy);
+                DownstreamGuard.Forget(this, entry.Original);
                 DestroyGenerated(entry);
             }
 

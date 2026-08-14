@@ -212,6 +212,12 @@ namespace Dennokoworks.DenMeshEditor.Editor
         internal bool AnyFallback { get; private set; }
 
         /// <summary>
+        /// 下流の NDMF フィルタが頂点数を変えているためにプロキシを使えない対象があるか。
+        /// この状態では他ツールの影響を反映した編集ができない。
+        /// </summary>
+        internal bool AnyVertexCountMismatch { get; private set; }
+
+        /// <summary>
         /// ユーザーへ警告を出すべきか。パイプライン再構築の数フレームで明滅しないよう、
         /// フォールバック状態が一定時間続いたときだけ true になる。
         /// </summary>

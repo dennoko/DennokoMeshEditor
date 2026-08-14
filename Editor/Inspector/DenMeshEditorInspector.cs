@@ -310,7 +310,16 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 MessageType.Info);
 
             var session = EditSession.Active;
-            if (session != null && session.ShowFallbackWarning)
+
+            if (session != null && session.AnyVertexCountMismatch)
+            {
+                EditorGUILayout.HelpBox(
+                    "他の NDMF ツールがメッシュの頂点数を変更しているため、"
+                    + "そのツールの影響を反映した編集ができません。\n"
+                    + "頂点の対応が取れなくなるのを防ぐため、変更前の形状を基準に編集しています。",
+                    MessageType.Warning);
+            }
+            else if (session != null && session.ShowFallbackWarning)
             {
                 EditorGUILayout.HelpBox(
                     "NDMF プレビューのプロキシを取得できていません。"
