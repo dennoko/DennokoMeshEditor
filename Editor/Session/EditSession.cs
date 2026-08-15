@@ -508,10 +508,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
             if (!_dragging && !_handleGrabbed) return;
             if (current.type != EventType.ScrollWheel) return;
 
-            // ホイール上方向で delta.y が負になる。上で拡大、下で縮小
+            // Blender準拠: ホイール上方向（delta.y < 0）で縮小、下方向（delta.y > 0）で拡大
             var notches = Mathf.Clamp(current.delta.y, -10f, 10f);
             _pendingRadius = Mathf.Clamp(
-                BrushRadius * Mathf.Pow(RadiusScrollStep, -notches),
+                BrushRadius * Mathf.Pow(RadiusScrollStep, notches),
                 MinBrushRadius, MaxBrushRadius);
             _hasPendingRadius = true;
 
