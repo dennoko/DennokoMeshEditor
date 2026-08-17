@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
 using UnityEditor;
@@ -9,6 +10,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
     /// <summary>
     /// ローカルの version.json を読み、GitHub 上の最新版と比較する。
     /// インポート時（コンパイル完了時）や起動時に自動でチェックが走る。
+    ///
+    /// ただし実際にリクエストを飛ばすのは前回から <see cref="CheckIntervalHours"/> 以上
+    /// 経過したときだけで、その間は前回結果（EditorPrefs キャッシュ）を表示に使う。
+    /// ドメインリロードのたびに取得しに行くと GitHub のレート制限に掛かるため。
     /// </summary>
     [InitializeOnLoad]
     internal static class DenMeshEditorVersion
@@ -45,6 +50,18 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private const string VerCheckUrlKey = "DennokoMeshEditor_VerCheck_Url";
         private const string VerCheckMessageKey = "DennokoMeshEditor_VerCheck_Message";
 
+        // 以下はエディタ再起動をまたいで保持する必要があるため EditorPrefs に置く。
+        // SessionState だと再起動のたびにリセットされ、レート制限中でも撃ち続けてしまう。
+        private const string VerCheckLastAttemptKey = "DennokoMeshEditor_VerCheck_LastAttemptUtc";
+        private const string VerCheckCachedLatestKey = "DennokoMeshEditor_VerCheck_CachedLatest";
+        private const string VerCheckCachedUrlKey = "DennokoMeshEditor_VerCheck_CachedUrl";
+        private const string VerCheckCachedMessageKey = "DennokoMeshEditor_VerCheck_CachedMessage";
+
+        // 前回リクエストからこの時間が経つまで自動チェックを行わない。ドメインリロード
+        // （スクリプト保存・Play mode 出入りごとに走る）で無制限に再試行すると、GitHub 側の
+        // レート制限を自分で悪化させ「制限 → エラー → 即再試行」のループに入るため。
+        private const double CheckIntervalHours = 6.0;
+
         static DenMeshEditorVersion()
         {
             // 静的コンストラクタはドメインリロード中に走り、この時点では version.json が
@@ -64,10 +81,49 @@ namespace Dennokoworks.DenMeshEditor.Editor
             bool error = SessionState.GetBool(VerCheckErrorKey, false);
             if (done && !error) return;
             if (_checking) return;
+
+            // クールダウン中はリクエストを送らず、前回取得できた結果をそのまま表示に使う。
+            // ここで done を立てないと「確認中…」のまま固まってしまう。
+            if (IsInCheckInterval())
+            {
+                ApplyCachedResult();
+                return;
+            }
+
             _checking = true;
+            EditorPrefs.SetString(VerCheckLastAttemptKey, DateTime.UtcNow.ToString("o"));
 
             DennokoVersionChecker.CheckAsync(
                 RepoOwner, RepoName, RepoBranch, VersionFilePath, Current, OnVersionChecked);
+        }
+
+        /// <summary>前回リクエストから <see cref="CheckIntervalHours"/> 経っていなければ true。</summary>
+        private static bool IsInCheckInterval()
+        {
+            var last = EditorPrefs.GetString(VerCheckLastAttemptKey, string.Empty);
+            if (string.IsNullOrEmpty(last)) return false;
+            if (!DateTime.TryParse(last, CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind, out var lastUtc)) return false;
+
+            // 端末時刻が巻き戻された場合に永久に待ち続けないよう、未来の記録は無効扱いにする
+            var elapsed = DateTime.UtcNow - lastUtc.ToUniversalTime();
+            if (elapsed < TimeSpan.Zero) return false;
+
+            return elapsed.TotalHours < CheckIntervalHours;
+        }
+
+        /// <summary>EditorPrefs に残っている前回の取得結果をセッションへ反映する。</summary>
+        private static void ApplyCachedResult()
+        {
+            var latest = EditorPrefs.GetString(VerCheckCachedLatestKey, string.Empty);
+            SessionState.SetBool(VerCheckDoneKey, true);
+            // 前回も取得できていなければエラー表示のまま（次のクールダウン明けに再試行される）
+            SessionState.SetBool(VerCheckErrorKey, string.IsNullOrEmpty(latest));
+            SessionState.SetString(VerCheckLatestKey, latest);
+            SessionState.SetString(VerCheckUrlKey, EditorPrefs.GetString(VerCheckCachedUrlKey, string.Empty));
+            SessionState.SetString(VerCheckMessageKey, EditorPrefs.GetString(VerCheckCachedMessageKey, string.Empty));
+
+            RefreshOpenInspectors();
         }
 
         /// <summary>手動での再取得。前回結果（成功/失敗・ローカル版キャッシュ）を破棄して再チェックする。</summary>
@@ -77,19 +133,37 @@ namespace Dennokoworks.DenMeshEditor.Editor
             _currentCache = null;  // ローカル版も読み直す（version.json を直したケースに対応）
             SessionState.SetBool(VerCheckDoneKey, false);
             SessionState.SetBool(VerCheckErrorKey, false);
+            // 明示的なユーザー操作なのでクールダウンは無視する（自動チェックのみ抑制対象）
+            EditorPrefs.DeleteKey(VerCheckLastAttemptKey);
             StartCheckBackgroundTask();
         }
 
         private static void OnVersionChecked(DennokoVersionChecker.Result result)
         {
             _checking = false;
+            bool failed = result.State == DennokoVersionChecker.State.Error;
+
             SessionState.SetBool(VerCheckDoneKey, true);
-            SessionState.SetBool(VerCheckErrorKey, result.State == DennokoVersionChecker.State.Error);
+            SessionState.SetBool(VerCheckErrorKey, failed);
             SessionState.SetString(VerCheckLatestKey, result.LatestVersion ?? string.Empty);
             SessionState.SetString(VerCheckUrlKey, result.Url ?? string.Empty);
             SessionState.SetString(VerCheckMessageKey, result.Message ?? string.Empty);
 
-            // すでに開かれている Inspector に反映させる
+            // 成功時のみ永続キャッシュを更新する。失敗で上書きすると、クールダウン中の
+            // 表示から「前回取得できていた最新版」が消えてしまうため。
+            if (!failed)
+            {
+                EditorPrefs.SetString(VerCheckCachedLatestKey, result.LatestVersion ?? string.Empty);
+                EditorPrefs.SetString(VerCheckCachedUrlKey, result.Url ?? string.Empty);
+                EditorPrefs.SetString(VerCheckCachedMessageKey, result.Message ?? string.Empty);
+            }
+
+            RefreshOpenInspectors();
+        }
+
+        /// <summary>すでに開かれている Inspector に取得結果を反映させる。</summary>
+        private static void RefreshOpenInspectors()
+        {
             var inspectors = Resources.FindObjectsOfTypeAll<DenMeshEditorInspector>();
             if (inspectors == null) return;
             foreach (var inspector in inspectors)
