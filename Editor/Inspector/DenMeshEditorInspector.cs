@@ -75,6 +75,15 @@ namespace Dennokoworks.DenMeshEditor.Editor
             // たびに一時的な取得失敗から自己回復できる。
             ReloadVersionResult();
             DenMeshEditorVersion.StartCheckBackgroundTask();
+
+            // 選択アウトラインを戻しそこねていた場合の自己回復。Inspector を選び直すたびに
+            // 再試行する。判定に IsActive(target) を使わないのは、別の対象へ選択を移した直後は
+            // まだ前のセッションが生きており（終了判定は OnSceneGui にある）、
+            // 抑制中に復元してしまうため。
+            if (EditSession.Active == null)
+            {
+                SelectionOutline.Restore();
+            }
         }
 
         /// <summary>取得完了時に <see cref="DenMeshEditorVersion"/> から呼ばれる。</summary>

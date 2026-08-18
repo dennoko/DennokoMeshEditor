@@ -133,15 +133,25 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             SceneView.duringSceneGui -= _active.OnSceneGui;
             EditorApplication.update -= _active.OnEditorUpdate;
-            _active.Cleanup();
-            _active = null;
 
-            // 開始前の状態へ戻す（ユーザーが自分でツールを隠していた場合を潰さない）
-            Tools.hidden = _toolsHiddenBefore;
-            SelectionOutline.Restore();
-            ActiveComponent.Value = null;
+            // 後始末は finally に置く。End は beforeAssemblyReload からも呼ばれるため、
+            // 上書きインポートの最中など Cleanup が途中で失敗する状況がありうる。そこで
+            // 抜けると Tools.hidden も選択アウトラインも戻らないまま残ってしまう。
+            try
+            {
+                _active.Cleanup();
+            }
+            finally
+            {
+                _active = null;
 
-            UnityEditorInternal.InternalEditorUtility.RepaintAllViews();
+                // 開始前の状態へ戻す（ユーザーが自分でツールを隠していた場合を潰さない）
+                Tools.hidden = _toolsHiddenBefore;
+                SelectionOutline.Restore();
+                ActiveComponent.Value = null;
+
+                UnityEditorInternal.InternalEditorUtility.RepaintAllViews();
+            }
         }
 
         internal static void NotifySettingsChanged()
