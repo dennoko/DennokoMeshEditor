@@ -184,6 +184,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             _targets.Clear();
             _screenCacheValid = false;
+            _gridCacheValid = false;
+            _previewValid = false;
         }
 
         // ------------------------------------------------------------------

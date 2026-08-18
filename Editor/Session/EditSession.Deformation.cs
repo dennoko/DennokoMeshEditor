@@ -165,6 +165,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
                     });
                 }
             }
+
+            NotifyInfluencesChanged();
         }
 
         /// <summary>

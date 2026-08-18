@@ -10,6 +10,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private bool _screenCacheValid;
         private int _geometryGeneration;
 
+        // 遮蔽三角形グリッドのキャッシュ。射影とは別に持つ（→ UpdateTriangleGrid）
+        private ViewKey _gridCacheKey;
+        private bool _gridCacheValid;
+
         // 自前射影のパラメータ。HandleUtility.WorldToGUIPoint と一致することを
         // 校正で確認できたときだけ使う（→ TryCalibrateFastProjection）
         private bool _fastProjection;
@@ -40,9 +44,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
             if (camera == null) return false;
 
             var cameraPosition = camera.transform.position;
-            var cameraForward = camera.transform.forward;
 
-            UpdateScreenCache(camera, cameraPosition, cameraForward);
+            UpdateTriangleGrid(camera);
             CollectCandidates(mousePosition);
             if (_candidates.Count == 0) return false;
 
@@ -61,19 +64,29 @@ namespace Dennokoworks.DenMeshEditor.Editor
         }
 
         /// <summary>
-        /// 全頂点のスクリーン座標と視線方向の深度を求め、遮蔽三角形のグリッドを作る。
+        /// 全頂点のスクリーン座標と視線方向の深度を求める。
         ///
-        /// 数万頂点に対する射影と三角形の登録はマウス移動のたびに回すには重いので、
-        /// 視点と形状が変わっていなければ前回の結果をそのまま使う。ホバー中はカメラも形状も
+        /// 数万頂点に対する射影はマウス移動のたびに回すには重いので、視点と形状が
+        /// 変わっていなければ前回の結果をそのまま使う。ホバー中はカメラも形状も
         /// 止まっているため、ほとんどのマウス移動でキャッシュヒットする。
+        ///
+        /// グリッド構築（<see cref="UpdateTriangleGrid"/>）とは分けてある。頂点プレビューは
+        /// カメラを動かすたびにスクリーン座標を必要とするが、グリッドは要らないため。
         /// </summary>
-        private void UpdateScreenCache(Camera camera, Vector3 cameraPosition, Vector3 cameraForward)
+        private void UpdateScreenPositions(Camera camera)
         {
             var key = ViewKey.From(camera, _geometryGeneration);
             if (_screenCacheValid && _screenCacheKey.Matches(key)) return;
 
             _screenCacheKey = key;
             _screenCacheValid = true;
+
+            // 射影が変われば、それを前提に組んだグリッドも作り直しになる
+            _gridCacheValid = false;
+
+            var cameraTransform = camera.transform;
+            var cameraPosition = cameraTransform.position;
+            var cameraForward = cameraTransform.forward;
 
             _fastProjection = TryCalibrateFastProjection(camera);
 
@@ -116,7 +129,28 @@ namespace Dennokoworks.DenMeshEditor.Editor
                         ? fast
                         : HandleUtility.WorldToGUIPoint(world);
                 }
+            }
+        }
 
+        /// <summary>
+        /// 遮蔽判定用の三角形グリッドを作る。
+        ///
+        /// 全三角形を 2 パスで走るため、頂点の射影よりずっと重い。必要なのはピックのときだけなので
+        /// 射影とは別のキャッシュにしてある。これを一体にすると、頂点プレビューがスクリーン座標を
+        /// 求めるためにカメラを動かすたび、使いもしないグリッドまで組み直すことになる。
+        /// </summary>
+        private void UpdateTriangleGrid(Camera camera)
+        {
+            UpdateScreenPositions(camera);
+
+            var key = ViewKey.From(camera, _geometryGeneration);
+            if (_gridCacheValid && _gridCacheKey.Matches(key)) return;
+
+            _gridCacheKey = key;
+            _gridCacheValid = true;
+
+            foreach (var target in _targets)
+            {
                 BuildTriangleGrid(target);
             }
         }

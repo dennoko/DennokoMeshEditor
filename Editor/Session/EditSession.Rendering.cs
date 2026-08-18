@@ -30,6 +30,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             var cameraPosition = camera.transform.position;
 
+            // どこに頂点があるかを常に見せる。影響範囲のドットはこの上に重ねて描く
+            DrawVertexPreview(camera);
+
             if (!_hasSelection)
             {
                 if (_hoverTarget?.WorldVertices == null || _hoverIndex < 0 ||
@@ -105,19 +108,34 @@ namespace Dennokoworks.DenMeshEditor.Editor
         }
 
         /// <summary>
-        /// 頂点プレビューのドットサイズを計算する。
-        /// カメラが離れたときにスクリーン上のドットが相対的に巨大化してメッシュを覆い隠さないよう、
-        /// 距離に応じた減衰およびブラシ半径に対する上限補正をかける。
+        /// 距離に応じた見かけサイズの減衰率。基準となる近距離・通常編集距離
+        /// （handleSize ≒ 0.05m 前後）。
+        /// </summary>
+        private const float VertexDotReferenceHandleSize = 0.05f;
+
+        /// <summary>
+        /// カメラが離れたときにスクリーン上のマーカーが相対的に巨大化してメッシュを
+        /// 覆い隠さないよう、見かけサイズを緩やかに減衰させる。
+        ///
+        /// ハンドルサイズにそのまま比例させるとスクリーン上の大きさは一定になるが、
+        /// 引いて全体を見ているときほどマーカーが密集するため、面が見えなくなる。
+        /// 頂点ドットと頂点プレビューで同じ規則を使う。
+        /// </summary>
+        private static float VertexDotDistanceScale(float handleSize)
+        {
+            return handleSize <= VertexDotReferenceHandleSize
+                ? 1f
+                : Mathf.Sqrt(VertexDotReferenceHandleSize / handleSize);
+        }
+
+        /// <summary>
+        /// 頂点ドットのサイズを計算する。
+        /// 距離に応じた減衰に加えて、ブラシ半径に対する上限補正をかける。
         /// </summary>
         private float GetVertexDotSize(Vector3 worldPosition, float screenScale, float maxRadiusRatio = 0.25f)
         {
             var handleSize = HandleUtility.GetHandleSize(worldPosition);
-            // 近距離・通常編集距離（handleSize ≒ 0.05m 前後）を基準とする
-            const float refSize = 0.05f;
-
-            // 基準距離より離れるほど、スクリーン上の見かけサイズを緩やかに減衰させる
-            var distanceScale = handleSize <= refSize ? 1f : Mathf.Sqrt(refSize / handleSize);
-            var size = handleSize * screenScale * distanceScale;
+            var size = handleSize * screenScale * VertexDotDistanceScale(handleSize);
 
             // ブラシ円に対してドットが大きくなりすぎないように上限を設ける
             var maxByRadius = BrushRadius * maxRadiusRatio;

@@ -258,6 +258,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             _influences.Clear();
             _candidates.Clear();
             _nearbyTriangles.Clear();
+            ClearVertexPreview();
 
             ProxyRegistry.Prune();
         }
@@ -496,6 +497,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             _selectedTarget = null;
             _selectedIndex = -1;
             _influences.Clear();
+            NotifyInfluencesChanged();
             _hoverTarget = null;
             _hoverIndex = -1;
         }
