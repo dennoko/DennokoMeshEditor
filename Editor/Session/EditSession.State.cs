@@ -422,13 +422,38 @@ namespace Dennokoworks.DenMeshEditor.Editor
         }
 
         /// <summary>
+        /// 頂点の取得元の空間 → ワールド空間の変換行列。
+        ///
+        /// スキンドの場合は <c>BakeMesh</c> の出力を使うが、その頂点は
+        /// 「Renderer の Transform のスケールを一切考慮しない」空間に入っている
+        /// （既定の <c>useScale: false</c> の挙動。localScale だけでなく親から継承した分も含めて無視される）。
+        /// そのため <c>localToWorldMatrix</c> を掛けるとスケールが二重に効き、
+        /// Renderer の原点を中心に lossyScale 倍へ膨らんだ位置になる。
+        ///
+        /// NDMF のプロキシは localScale が 1 のまま生成されるので通常は表面化しないが、
+        /// Modular Avatar の Scale Adjuster はプロキシをシャドウボーン配下へ移すため、
+        /// 衣装ルートなどにスケールが掛かっているとプロキシもそれを継承する。
+        /// プロキシを取得できずに元 Renderer へ退避した場合も同様。
+        ///
+        /// スキンドでない場合の頂点はメッシュローカルなので、スケールを含む行列が正しい。
+        /// </summary>
+        private static Matrix4x4 MeshToWorld(TargetState target)
+        {
+            var transform = target.Proxy.transform;
+
+            return target.Skinned != null
+                ? Matrix4x4.TRS(transform.position, transform.rotation, Vector3.one)
+                : transform.localToWorldMatrix;
+        }
+
+        /// <summary>
         /// プロキシからワールド空間の頂点位置を取り直す。実際に位置が変わったら true。
         /// </summary>
         private static bool UpdateWorldVertices(TargetState target)
         {
             if (target.Proxy == null || target.Mesh == null) return false;
 
-            var localToWorld = target.Proxy.transform.localToWorldMatrix;
+            var localToWorld = MeshToWorld(target);
             var source = target.LocalVertices;
 
             if (target.Skinned != null)

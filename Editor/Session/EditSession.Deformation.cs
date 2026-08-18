@@ -49,7 +49,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
             // ここへ来た時点でプロキシが破棄済み（パイプライン再構築）ということがありうる。
             if (target.Proxy == null) return Matrix4x4.identity;
 
-            var fallback = target.Proxy.transform.localToWorldMatrix;
+            // ボーン情報を読めなかったときは頂点位置の取得と同じ変換で代用する。
+            // ここだけ localToWorldMatrix を使うと、スケールの扱いが
+            // WorldVertices と食い違ってデルタがずれる
+            var fallback = MeshToWorld(target);
 
             if (target.Skinned == null || target.Bones == null || target.BindPoses.Count == 0 ||
                 index >= target.BoneWeights.Count)
