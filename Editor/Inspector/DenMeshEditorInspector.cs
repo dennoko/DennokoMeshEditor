@@ -70,6 +70,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
             _bakeAsBlendShape = serializedObject.FindProperty("bakeAsBlendShape");
             _blendShapeName = serializedObject.FindProperty("blendShapeName");
 
+            DenMeshEditorLocalization.OnLanguageChanged += OnLanguageChanged;
+
             // 前回の取得結果を反映しつつ、未取得／前回エラーなら取得を開始する
             //（要否の判定は StartCheckBackgroundTask 内で行う）。Inspector を選び直す
             // たびに一時的な取得失敗から自己回復できる。
@@ -84,6 +86,16 @@ namespace Dennokoworks.DenMeshEditor.Editor
             {
                 SelectionOutline.Restore();
             }
+        }
+
+        private void OnDisable()
+        {
+            DenMeshEditorLocalization.OnLanguageChanged -= OnLanguageChanged;
+        }
+
+        private void OnLanguageChanged()
+        {
+            Repaint();
         }
 
         /// <summary>取得完了時に <see cref="DenMeshEditorVersion"/> から呼ばれる。</summary>
@@ -129,7 +141,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// 一番上の 1 行。左に現在のバージョン、その隣に更新状態、右端に再確認ボタン。
+        /// 一番上の 1 行。左に現在のバージョン、その隣に更新状態、右端に再確認ボタンと言語切り替えボタン。
         /// 「更新あり」のときだけクリックでダウンロードページを開く。
         /// </summary>
         private void DrawVersionBar()
@@ -152,12 +164,12 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 case DennokoVersionChecker.State.UpdateAvailable:
                 {
                     var tooltip = string.IsNullOrEmpty(_versionResult.Message)
-                        ? "クリックでダウンロードページを開きます"
+                        ? DenMeshEditorLocalization.Tr("version.update_tooltip")
                         : _versionResult.Message;
 
                     GUI.contentColor = new Color(0.35f, 0.8f, 0.4f);
                     var clicked = GUILayout.Button(
-                        new GUIContent($"更新あり {_versionResult.LatestVersion} ↗", tooltip),
+                        new GUIContent(DenMeshEditorLocalization.Format("version.update_available", _versionResult.LatestVersion), tooltip),
                         _versionLinkStyle, GUILayout.ExpandWidth(false));
                     GUI.contentColor = prevColor;
 
@@ -172,14 +184,14 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 case DennokoVersionChecker.State.Error:
                     GUI.contentColor = new Color(1f, 0.72f, 0.3f);
                     GUILayout.Label(
-                        new GUIContent("最新版を取得できません", "↻ ボタンで再確認できます"),
+                        new GUIContent(DenMeshEditorLocalization.Tr("version.error"), DenMeshEditorLocalization.Tr("version.error_tooltip")),
                         EditorStyles.miniLabel, GUILayout.ExpandWidth(false));
                     GUI.contentColor = prevColor;
                     break;
 
                 case DennokoVersionChecker.State.Checking:
                     GUI.contentColor = new Color(0.55f, 0.55f, 0.55f);
-                    GUILayout.Label("確認中...", EditorStyles.miniLabel, GUILayout.ExpandWidth(false));
+                    GUILayout.Label(DenMeshEditorLocalization.Tr("version.checking"), EditorStyles.miniLabel, GUILayout.ExpandWidth(false));
                     GUI.contentColor = prevColor;
                     break;
 
@@ -189,10 +201,15 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             GUILayout.FlexibleSpace();
 
-            if (GUILayout.Button(new GUIContent("↻", "アップデートを再確認"), EditorStyles.miniButton, GUILayout.Width(22)))
+            if (GUILayout.Button(new GUIContent("↻", DenMeshEditorLocalization.Tr("version.recheck_tooltip")), EditorStyles.miniButton, GUILayout.Width(22)))
             {
                 DenMeshEditorVersion.ForceRecheck();
                 ReloadVersionResult(); // 即座に「確認中...」表示へ
+            }
+
+            if (GUILayout.Button(new GUIContent(DenMeshEditorLocalization.ButtonText, DenMeshEditorLocalization.ButtonTooltip), EditorStyles.miniButton, GUILayout.Width(28)))
+            {
+                DenMeshEditorLocalization.ToggleLanguage();
             }
 
             EditorGUILayout.EndHorizontal();
@@ -205,7 +222,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
         private void DrawTargets()
         {
-            EditorGUILayout.LabelField("編集対象", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField(DenMeshEditorLocalization.Tr("inspector.targets_header"), EditorStyles.boldLabel);
 
             var removeAt = -1;
 
@@ -219,7 +236,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 EditorGUILayout.BeginHorizontal();
                 EditorGUILayout.PropertyField(targetProp, GUIContent.none);
 
-                GUILayout.Label($"{countProp.intValue} 頂点", GUILayout.Width(64));
+                GUILayout.Label(DenMeshEditorLocalization.Format("inspector.vertex_count", countProp.intValue), GUILayout.Width(64));
 
                 if (GUILayout.Button("×", GUILayout.Width(22)))
                 {
@@ -236,7 +253,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 _edits.DeleteArrayElementAtIndex(removeAt);
             }
 
-            if (GUILayout.Button("対象を追加"))
+            if (GUILayout.Button(DenMeshEditorLocalization.Tr("inspector.add_target")))
             {
                 // arraySize++ は直前の要素を複製する。編集データ（byte[] blob）まで
                 // 引き継がれると厄介なので、SerializedProperty で個別に潰すのではなく
@@ -258,7 +275,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             if (_edits.arraySize == 0)
             {
-                EditorGUILayout.HelpBox("編集対象の Renderer を追加してください。", MessageType.Info);
+                EditorGUILayout.HelpBox(DenMeshEditorLocalization.Tr("inspector.add_target_prompt"), MessageType.Info);
             }
         }
 
@@ -270,7 +287,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             var mesh = MeshDeltaApplier.GetSharedMesh(renderer);
             if (mesh == null)
             {
-                EditorGUILayout.HelpBox("この Renderer にメッシュが設定されていません。", MessageType.Warning);
+                EditorGUILayout.HelpBox(DenMeshEditorLocalization.Tr("inspector.warn_no_mesh"), MessageType.Warning);
                 return;
             }
 
@@ -278,8 +295,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             if (recorded != 0 && recorded != mesh.vertexCount)
             {
                 EditorGUILayout.HelpBox(
-                    $"頂点数が編集時と異なります（現在 {mesh.vertexCount} / 編集時 {recorded}）。"
-                    + "編集は適用されません。元メッシュが差し替わったか、再インポートで頂点順が変化した可能性があります。",
+                    DenMeshEditorLocalization.Format("inspector.warn_vertex_count_mismatch", mesh.vertexCount, recorded),
                     MessageType.Error);
             }
         }
@@ -296,7 +312,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 if (editing)
                 {
                     GUI.backgroundColor = new Color(1f, 0.55f, 0.55f);
-                    if (GUILayout.Button("編集終了", GUILayout.Height(28)))
+                    if (GUILayout.Button(DenMeshEditorLocalization.Tr("inspector.btn_edit_end"), GUILayout.Height(28)))
                     {
                         EditSession.End();
                     }
@@ -304,7 +320,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 else
                 {
                     GUI.backgroundColor = new Color(0.35f, 0.75f, 1f);
-                    if (GUILayout.Button("編集", GUILayout.Height(28)))
+                    if (GUILayout.Button(DenMeshEditorLocalization.Tr("inspector.btn_edit_start"), GUILayout.Height(28)))
                     {
                         serializedObject.ApplyModifiedProperties();
                         EditSession.Begin(component);
@@ -316,8 +332,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             if (!editing) return;
 
             EditorGUILayout.HelpBox(
-                "シーンビューで頂点をクリックして選択し、移動ハンドルでドラッグします。\n"
-                + "Esc で選択解除、もう一度 Esc で編集終了。",
+                DenMeshEditorLocalization.Tr("inspector.edit_help"),
                 MessageType.Info);
 
             var session = EditSession.Active;
@@ -325,26 +340,23 @@ namespace Dennokoworks.DenMeshEditor.Editor
             if (session != null && session.AnyVertexCountMismatch)
             {
                 EditorGUILayout.HelpBox(
-                    "他の NDMF ツールがメッシュの頂点数を変更しているため、"
-                    + "そのツールの影響を反映した編集ができません。\n"
-                    + "頂点の対応が取れなくなるのを防ぐため、変更前の形状を基準に編集しています。",
+                    DenMeshEditorLocalization.Tr("inspector.warn_ndmf_vertex_mismatch"),
                     MessageType.Warning);
             }
             else if (session != null && session.ShowFallbackWarning)
             {
                 EditorGUILayout.HelpBox(
-                    "NDMF プレビューのプロキシを取得できていません。"
-                    + "Scale Adjuster など他ツールの影響が反映されていない状態で編集しています。\n"
-                    + "NDMF のプレビューが有効になっているか確認してください。",
+                    DenMeshEditorLocalization.Tr("inspector.warn_ndmf_fallback"),
                     MessageType.Warning);
             }
         }
 
         private void DrawBrushSettings()
         {
-            EditorGUILayout.LabelField("ブラシ設定", EditorStyles.boldLabel);
-            EditorGUILayout.Slider(_brushRadius, EditSession.MinBrushRadius, EditSession.MaxBrushRadius, new GUIContent("半径", "プロポーショナル編集の影響半径（ワールド単位）"));
-            EditorGUILayout.PropertyField(_falloff, new GUIContent("減衰"));
+            EditorGUILayout.LabelField(DenMeshEditorLocalization.Tr("inspector.brush_header"), EditorStyles.boldLabel);
+            EditorGUILayout.Slider(_brushRadius, EditSession.MinBrushRadius, EditSession.MaxBrushRadius,
+                new GUIContent(DenMeshEditorLocalization.Tr("inspector.brush_radius"), DenMeshEditorLocalization.Tr("inspector.brush_radius_tooltip")));
+            EditorGUILayout.PropertyField(_falloff, new GUIContent(DenMeshEditorLocalization.Tr("inspector.brush_falloff")));
 
             EditorGUILayout.Space(2);
 
@@ -355,7 +367,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 GUI.backgroundColor = new Color(0.35f, 0.95f, 0.45f);
             }
 
-            var buttonText = mirrorActive ? "ミラー: 有効 (ON)" : "ミラー: 無効 (OFF)";
+            var buttonText = mirrorActive ? DenMeshEditorLocalization.Tr("inspector.mirror_on") : DenMeshEditorLocalization.Tr("inspector.mirror_off");
             if (GUILayout.Button(buttonText, GUILayout.Height(28)))
             {
                 _mirror.boolValue = !mirrorActive;
@@ -373,15 +385,14 @@ namespace Dennokoworks.DenMeshEditor.Editor
             if (_mirror.boolValue)
             {
                 EditorGUILayout.HelpBox(
-                    "ミラーは編集操作そのものを反転します（中心座標と変位ベクトルの両方を反射）。"
-                    + "左右対称なトポロジは不要です。基準はアバタールートのローカル空間です。",
+                    DenMeshEditorLocalization.Tr("inspector.mirror_help"),
                     MessageType.None);
             }
         }
 
         private void DrawMirrorAxisButtons()
         {
-            EditorGUILayout.LabelField("ミラー軸");
+            EditorGUILayout.LabelField(DenMeshEditorLocalization.Tr("inspector.mirror_axis"));
             EditorGUILayout.BeginHorizontal();
 
             var currentAxis = (MirrorAxis)_mirrorAxis.enumValueIndex;
@@ -390,9 +401,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             var axes = new[]
             {
-                (Axis: MirrorAxis.X, Label: "X 軸", Tooltip: "X 軸（左右対称）"),
-                (Axis: MirrorAxis.Y, Label: "Y 軸", Tooltip: "Y 軸（上下対称）"),
-                (Axis: MirrorAxis.Z, Label: "Z 軸", Tooltip: "Z 軸（前後対称）"),
+                (Axis: MirrorAxis.X, Label: DenMeshEditorLocalization.Tr("inspector.axis_x"), Tooltip: DenMeshEditorLocalization.Tr("inspector.axis_x_tooltip")),
+                (Axis: MirrorAxis.Y, Label: DenMeshEditorLocalization.Tr("inspector.axis_y"), Tooltip: DenMeshEditorLocalization.Tr("inspector.axis_y_tooltip")),
+                (Axis: MirrorAxis.Z, Label: DenMeshEditorLocalization.Tr("inspector.axis_z"), Tooltip: DenMeshEditorLocalization.Tr("inspector.axis_z_tooltip")),
             };
 
             foreach (var item in axes)
@@ -419,23 +430,22 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
         private void DrawBakeSection(DenMeshEditor component)
         {
-            EditorGUILayout.LabelField("ベイク", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField(DenMeshEditorLocalization.Tr("inspector.bake_header"), EditorStyles.boldLabel);
 
             EditorGUILayout.PropertyField(_bakeAsBlendShape,
-                new GUIContent("シェイプキーとして追加", "ON にすると元の形状を保ったまま、編集分をシェイプキーとして追加します"));
+                new GUIContent(DenMeshEditorLocalization.Tr("inspector.bake_as_blendshape"), DenMeshEditorLocalization.Tr("inspector.bake_as_blendshape_tooltip")));
 
             if (_bakeAsBlendShape.boolValue)
             {
                 using (new EditorGUI.IndentLevelScope())
                 {
                     EditorGUILayout.PropertyField(_blendShapeName,
-                        new GUIContent("シェイプキー名", "追加するシェイプキーの名前。空の場合は元メッシュ名に _edited を付与した名前になります"));
+                        new GUIContent(DenMeshEditorLocalization.Tr("inspector.blendshape_name"), DenMeshEditorLocalization.Tr("inspector.blendshape_name_tooltip")));
                 }
             }
 
             EditorGUILayout.HelpBox(
-                "元メッシュと同じフォルダに _edited を付けた名前で書き出します。"
-                + "シーン内の Renderer は差し替えません。",
+                DenMeshEditorLocalization.Tr("inspector.bake_help"),
                 MessageType.None);
 
             var hasEdits = false;
@@ -448,7 +458,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             using (new EditorGUI.DisabledScope(!hasEdits))
             {
-                if (GUILayout.Button("ベイク", GUILayout.Height(24)))
+                if (GUILayout.Button(DenMeshEditorLocalization.Tr("inspector.btn_bake"), GUILayout.Height(24)))
                 {
                     serializedObject.ApplyModifiedProperties();
                     DenMeshEditorBaker.Bake(component);
@@ -459,10 +469,13 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             using (new EditorGUI.DisabledScope(!hasEdits))
             {
-                if (GUILayout.Button("すべての編集をクリア"))
+                if (GUILayout.Button(DenMeshEditorLocalization.Tr("inspector.btn_clear_all")))
                 {
-                    if (EditorUtility.DisplayDialog("Dennoko Mesh Editor",
-                            "すべての編集内容を破棄します。よろしいですか？", "クリア", "キャンセル"))
+                    if (EditorUtility.DisplayDialog(
+                            DenMeshEditorLocalization.Tr("inspector.dialog_clear_title"),
+                            DenMeshEditorLocalization.Tr("inspector.dialog_clear_message"),
+                            DenMeshEditorLocalization.Tr("inspector.dialog_clear_ok"),
+                            DenMeshEditorLocalization.Tr("inspector.dialog_clear_cancel")))
                     {
                         EditSession.End();
 

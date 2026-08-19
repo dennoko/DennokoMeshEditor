@@ -1,0 +1,264 @@
+{
+  "entries": [
+    {
+      "key": "version.update_available",
+      "ja": "更新あり {0} ↗",
+      "en": "Update available {0} ↗"
+    },
+    {
+      "key": "version.update_tooltip",
+      "ja": "クリックでダウンロードページを開きます",
+      "en": "Click to open download page"
+    },
+    {
+      "key": "version.error",
+      "ja": "最新版を取得できません",
+      "en": "Failed to check update"
+    },
+    {
+      "key": "version.error_tooltip",
+      "ja": "↻ ボタンで再確認できます",
+      "en": "Click ↻ to recheck"
+    },
+    {
+      "key": "version.checking",
+      "ja": "確認中...",
+      "en": "Checking..."
+    },
+    {
+      "key": "version.recheck_tooltip",
+      "ja": "アップデートを再確認",
+      "en": "Recheck update"
+    },
+    {
+      "key": "version.switch_language_tooltip",
+      "ja": "言語を英語に切り替え",
+      "en": "Switch language to Japanese"
+    },
+    {
+      "key": "inspector.targets_header",
+      "ja": "編集対象",
+      "en": "Targets"
+    },
+    {
+      "key": "inspector.vertex_count",
+      "ja": "{0} 頂点",
+      "en": "{0} verts"
+    },
+    {
+      "key": "inspector.add_target",
+      "ja": "対象を追加",
+      "en": "Add Target"
+    },
+    {
+      "key": "inspector.add_target_prompt",
+      "ja": "編集対象の Renderer を追加してください。",
+      "en": "Please add a target Renderer."
+    },
+    {
+      "key": "inspector.warn_no_mesh",
+      "ja": "この Renderer にメッシュが設定されていません。",
+      "en": "No mesh is assigned to this Renderer."
+    },
+    {
+      "key": "inspector.warn_vertex_count_mismatch",
+      "ja": "頂点数が編集時と異なります（現在 {0} / 編集時 {1}）。編集は適用されません。元メッシュが差し替わったか、再インポートで頂点順が変化した可能性があります。",
+      "en": "Vertex count differs from when edited (Current: {0} / Edited: {1}). Edits will not be applied. The original mesh may have been replaced or re-imported."
+    },
+    {
+      "key": "inspector.btn_edit_end",
+      "ja": "編集終了",
+      "en": "Finish Editing"
+    },
+    {
+      "key": "inspector.btn_edit_start",
+      "ja": "編集",
+      "en": "Edit"
+    },
+    {
+      "key": "inspector.edit_help",
+      "ja": "シーンビューで頂点をクリックして選択し、移動ハンドルでドラッグします。\nEsc で選択解除、もう一度 Esc で編集終了。",
+      "en": "Click vertices in Scene View to select, then drag with the transform handle.\nEsc to deselect, Esc again to finish editing."
+    },
+    {
+      "key": "inspector.warn_ndmf_vertex_mismatch",
+      "ja": "他の NDMF ツールがメッシュの頂点数を変更しているため、そのツールの影響を反映した編集ができません。\n頂点の対応が取れなくなるのを防ぐため、変更前の形状を基準に編集しています。",
+      "en": "Another NDMF tool modified the vertex count, preventing edits with tool influences.\nEditing based on the original mesh shape to maintain vertex correspondence."
+    },
+    {
+      "key": "inspector.warn_ndmf_fallback",
+      "ja": "NDMF プレビューのプロキシを取得できていません。Scale Adjuster など他ツールの影響が反映されていない状態で編集しています。\nNDMF のプレビューが有効になっているか確認してください。",
+      "en": "Could not acquire NDMF preview proxy. Editing without influences of other tools (e.g. Scale Adjuster).\nPlease check if NDMF preview is enabled."
+    },
+    {
+      "key": "inspector.brush_header",
+      "ja": "ブラシ設定",
+      "en": "Brush Settings"
+    },
+    {
+      "key": "inspector.brush_radius",
+      "ja": "半径",
+      "en": "Radius"
+    },
+    {
+      "key": "inspector.brush_radius_tooltip",
+      "ja": "プロポーショナル編集の影響半径（ワールド単位）",
+      "en": "Influence radius for proportional editing (world units)"
+    },
+    {
+      "key": "inspector.brush_falloff",
+      "ja": "減衰",
+      "en": "Falloff"
+    },
+    {
+      "key": "inspector.mirror_on",
+      "ja": "ミラー: 有効 (ON)",
+      "en": "Mirror: Enabled (ON)"
+    },
+    {
+      "key": "inspector.mirror_off",
+      "ja": "ミラー: 無効 (OFF)",
+      "en": "Mirror: Disabled (OFF)"
+    },
+    {
+      "key": "inspector.mirror_axis",
+      "ja": "ミラー軸",
+      "en": "Mirror Axis"
+    },
+    {
+      "key": "inspector.axis_x",
+      "ja": "X 軸",
+      "en": "X Axis"
+    },
+    {
+      "key": "inspector.axis_x_tooltip",
+      "ja": "X 軸（左右対称）",
+      "en": "X Axis (Left/Right)"
+    },
+    {
+      "key": "inspector.axis_y",
+      "ja": "Y 軸",
+      "en": "Y Axis"
+    },
+    {
+      "key": "inspector.axis_y_tooltip",
+      "ja": "Y 軸（上下対称）",
+      "en": "Y Axis (Up/Down)"
+    },
+    {
+      "key": "inspector.axis_z",
+      "ja": "Z 軸",
+      "en": "Z Axis"
+    },
+    {
+      "key": "inspector.axis_z_tooltip",
+      "ja": "Z 軸（前後対称）",
+      "en": "Z Axis (Front/Back)"
+    },
+    {
+      "key": "inspector.mirror_help",
+      "ja": "ミラーは編集操作そのものを反転します（中心座標と変位ベクトルの両方を反射）。左右対称なトポロジは不要です。基準はアバタールートのローカル空間です。",
+      "en": "Mirror inverts the edit operations (reflecting center coordinate and displacement vector). Symmetrical topology is not required. Origin is avatar root local space."
+    },
+    {
+      "key": "inspector.bake_header",
+      "ja": "ベイク",
+      "en": "Bake"
+    },
+    {
+      "key": "inspector.bake_as_blendshape",
+      "ja": "シェイプキーとして追加",
+      "en": "Add as BlendShape"
+    },
+    {
+      "key": "inspector.bake_as_blendshape_tooltip",
+      "ja": "ON にすると元の形状を保ったまま、編集分をシェイプキーとして追加します",
+      "en": "When enabled, keeps original shape and adds edits as a BlendShape"
+    },
+    {
+      "key": "inspector.blendshape_name",
+      "ja": "シェイプキー名",
+      "en": "BlendShape Name"
+    },
+    {
+      "key": "inspector.blendshape_name_tooltip",
+      "ja": "追加するシェイプキーの名前。空の場合は元メッシュ名に _edited を付与した名前になります",
+      "en": "Name of the BlendShape. If empty, uses original mesh name with _edited suffix"
+    },
+    {
+      "key": "inspector.bake_help",
+      "ja": "元メッシュと同じフォルダに _edited を付けた名前で書き出します。シーン内の Renderer は差し替えません。",
+      "en": "Exports to the same folder as original mesh with '_edited' suffix. Scene Renderers will not be replaced."
+    },
+    {
+      "key": "inspector.btn_bake",
+      "ja": "ベイク",
+      "en": "Bake"
+    },
+    {
+      "key": "inspector.btn_clear_all",
+      "ja": "すべての編集をクリア",
+      "en": "Clear All Edits"
+    },
+    {
+      "key": "inspector.dialog_clear_title",
+      "ja": "Dennoko Mesh Editor",
+      "en": "Dennoko Mesh Editor"
+    },
+    {
+      "key": "inspector.dialog_clear_message",
+      "ja": "すべての編集内容を破棄します。よろしいですか？",
+      "en": "Discard all edit contents. Are you sure?"
+    },
+    {
+      "key": "inspector.dialog_clear_ok",
+      "ja": "クリア",
+      "en": "Clear"
+    },
+    {
+      "key": "inspector.dialog_clear_cancel",
+      "ja": "キャンセル",
+      "en": "Cancel"
+    },
+    {
+      "key": "overlay.title",
+      "ja": "Dennoko Mesh Editor — 編集中",
+      "en": "Dennoko Mesh Editor — Editing"
+    },
+    {
+      "key": "overlay.radius",
+      "ja": "半径",
+      "en": "Radius"
+    },
+    {
+      "key": "overlay.falloff",
+      "ja": "減衰",
+      "en": "Falloff"
+    },
+    {
+      "key": "overlay.mirror_on",
+      "ja": "ミラー: 有効 (ON)",
+      "en": "Mirror: Enabled (ON)"
+    },
+    {
+      "key": "overlay.mirror_off",
+      "ja": "ミラー: 無効 (OFF)",
+      "en": "Mirror: Disabled (OFF)"
+    },
+    {
+      "key": "overlay.hint_wheel",
+      "ja": "※ ハンドル操作中にマウスホイールで半径変更",
+      "en": "※ Change radius with mouse wheel while dragging handle"
+    },
+    {
+      "key": "overlay.hint_esc",
+      "ja": "※ Escキーで編集終了（選択中は選択解除）",
+      "en": "※ Esc to finish editing (deselects if selected)"
+    },
+    {
+      "key": "overlay.warn_ndmf_fallback",
+      "ja": "NDMF プレビュー未取得。他ツールの影響は反映されていません。",
+      "en": "NDMF preview not acquired. Other tool effects are not reflected."
+    }
+  ]
+}

@@ -23,7 +23,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             }
 
             var current = Event.current;
-            var overlayHeight = _overlayShowsWarning ? 204f : 164f;
+            var overlayHeight = _overlayShowsWarning ? 230f : 190f;
             var overlayWidth = 330f;
             const float margin = 10f;
 
@@ -90,7 +90,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             EditorGUILayout.BeginHorizontal();
             GUILayout.Space(8);
-            GUILayout.Label("Dennoko Mesh Editor — 編集中", EditorStyles.boldLabel);
+            GUILayout.Label(DenMeshEditorLocalization.Tr("overlay.title"), EditorStyles.boldLabel);
             GUILayout.FlexibleSpace();
             GUILayout.Label("⠿", EditorStyles.miniLabel);
             GUILayout.Space(8);
@@ -104,8 +104,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             EditorGUI.BeginChangeCheck();
             // ドラッグ中にホイールで変えた未確定の半径もそのまま表示する
-            var radius = EditorGUILayout.Slider("半径", BrushRadius, MinBrushRadius, MaxBrushRadius);
-            var falloff = (FalloffType)EditorGUILayout.EnumPopup("減衰", _component.falloff);
+            var radius = EditorGUILayout.Slider(DenMeshEditorLocalization.Tr("overlay.radius"), BrushRadius, MinBrushRadius, MaxBrushRadius);
+            var falloff = (FalloffType)EditorGUILayout.EnumPopup(DenMeshEditorLocalization.Tr("overlay.falloff"), _component.falloff);
             if (EditorGUI.EndChangeCheck())
             {
                 // スライダーのドラッグは毎フレーム変更を出すので、
@@ -147,7 +147,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 GUI.backgroundColor = new Color(0.35f, 0.95f, 0.45f);
             }
 
-            var buttonText = mirrorActive ? "ミラー: 有効 (ON)" : "ミラー: 無効 (OFF)";
+            var buttonText = mirrorActive ? DenMeshEditorLocalization.Tr("overlay.mirror_on") : DenMeshEditorLocalization.Tr("overlay.mirror_off");
             if (GUILayout.Button(buttonText, GUILayout.Height(28)))
             {
                 Undo.RecordObject(_component, "Dennoko Mesh Editor Mirror Toggle");
@@ -175,11 +175,12 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 wordWrap = true,
                 normal = { textColor = new Color(0.3f, 0.95f, 0.45f) }
             };
-            GUILayout.Label("※ ハンドル操作中にマウスホイールで半径変更", hintStyle);
+            GUILayout.Label(DenMeshEditorLocalization.Tr("overlay.hint_wheel"), hintStyle);
+            GUILayout.Label(DenMeshEditorLocalization.Tr("overlay.hint_esc"), hintStyle);
 
             if (_overlayShowsWarning)
             {
-                EditorGUILayout.HelpBox("NDMF プレビュー未取得。他ツールの影響は反映されていません。",
+                EditorGUILayout.HelpBox(DenMeshEditorLocalization.Tr("overlay.warn_ndmf_fallback"),
                     MessageType.Warning);
             }
 
