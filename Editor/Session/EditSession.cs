@@ -109,6 +109,13 @@ namespace Dennokoworks.DenMeshEditor.Editor
             End();
             if (component == null) return;
 
+            // Inspector をロックして別オブジェクトが選択された状態から編集開始された場合でも、
+            // 対象オブジェクトを自動フォーカスして OnSceneGui の選択チェックを通過させる
+            if (component.gameObject != null)
+            {
+                Selection.activeGameObject = component.gameObject;
+            }
+
             _active = new EditSession(component);
             SceneView.duringSceneGui += _active.OnSceneGui;
 
