@@ -76,24 +76,17 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
         /// <summary>
         /// 下流上書きが検出されているときだけ、NDMF への通知を間引きながら流す。
+        /// 同期的に SyncedVersion を更新するとパイプライン再構築がメインスレッドをブロックするため、
+        /// 必ず EditorApplication.update で非同期に流す。
         /// </summary>
         private static void RequestSync()
         {
             if (!DownstreamGuard.AnyOverridden) return;
 
-            var now = EditorApplication.timeSinceStartup;
-            if (now < _nextSync)
-            {
-                // 間引きで落とした最後の 1 回（＝ドラッグの最終位置）を取りこぼさないよう、
-                // 間隔が明けたところで必ず一度流す
-                if (_syncPending) return;
+            if (_syncPending) return;
 
-                _syncPending = true;
-                EditorApplication.update += FlushPending;
-                return;
-            }
-
-            Sync(now);
+            _syncPending = true;
+            EditorApplication.update += FlushPending;
         }
 
         private static void FlushPending()
@@ -101,17 +94,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
             var now = EditorApplication.timeSinceStartup;
             if (now < _nextSync) return;
 
-            Sync(now);
-        }
-
-        private static void Sync(double now)
-        {
-            if (_syncPending)
-            {
-                EditorApplication.update -= FlushPending;
-                _syncPending = false;
-            }
-
+            EditorApplication.update -= FlushPending;
+            _syncPending = false;
             _nextSync = now + SyncIntervalSeconds;
             SyncedVersion.Value = _version;
         }

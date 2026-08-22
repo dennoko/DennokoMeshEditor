@@ -48,9 +48,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
             {
                 if (component.edits.Count == 0)
                 {
-                    Undo.RecordObject(component, "Add Target to DenMeshEditor");
+                    DenMeshEditorUndo.BeginGroup(component, "Add Target to DenMeshEditor");
                     component.edits.Add(new MeshEdit { target = renderer });
-                    EditorUtility.SetDirty(component);
+                    DenMeshEditorUndo.Apply(component);
+                    DenMeshEditorUndo.EndGroup();
                 }
 
                 if (MeshDeltaApplier.GetSharedMesh(renderer) != null)
@@ -261,14 +262,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 serializedObject.ApplyModifiedProperties();
 
                 var component = (DenMeshEditor)target;
-                Undo.RecordObject(component, "Add Dennoko Mesh Editor Target");
+                DenMeshEditorUndo.BeginGroup(component, "Add Dennoko Mesh Editor Target");
                 component.edits.Add(new MeshEdit());
-                EditorUtility.SetDirty(component);
-
-                if (PrefabUtility.IsPartOfPrefabInstance(component))
-                {
-                    PrefabUtility.RecordPrefabInstancePropertyModifications(component);
-                }
+                DenMeshEditorUndo.Apply(component);
+                DenMeshEditorUndo.EndGroup();
 
                 serializedObject.Update();
             }
@@ -479,17 +476,14 @@ namespace Dennokoworks.DenMeshEditor.Editor
                     {
                         EditSession.End();
 
-                        Undo.RecordObject(component, "Clear Dennoko Mesh Editor Edits");
+                        DenMeshEditorUndo.BeginGroup(component, "Clear Dennoko Mesh Editor Edits");
                         foreach (var edit in component.edits)
                         {
                             edit?.Clear();
                         }
 
-                        EditorUtility.SetDirty(component);
-                        if (PrefabUtility.IsPartOfPrefabInstance(component))
-                        {
-                            PrefabUtility.RecordPrefabInstancePropertyModifications(component);
-                        }
+                        DenMeshEditorUndo.Apply(component);
+                        DenMeshEditorUndo.EndGroup();
 
                         LiveEdits.Invalidate();
 

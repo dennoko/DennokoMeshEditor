@@ -118,11 +118,11 @@ namespace Dennokoworks.DenMeshEditor.Editor
                     Undo.SetCurrentGroupName("Dennoko Mesh Editor Settings");
                 }
 
-                Undo.RecordObject(_component, "Dennoko Mesh Editor Settings");
+                DenMeshEditorUndo.Record(_component, "Dennoko Mesh Editor Settings");
                 _hasPendingRadius = false;
                 _component.brushRadius = radius;
                 _component.falloff = falloff;
-                EditorUtility.SetDirty(_component);
+                DenMeshEditorUndo.Apply(_component);
 
                 // 半径・減衰が変わったら影響範囲を計算し直す
                 if (_hasSelection)
@@ -150,9 +150,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
             var buttonText = mirrorActive ? DenMeshEditorLocalization.Tr("overlay.mirror_on") : DenMeshEditorLocalization.Tr("overlay.mirror_off");
             if (GUILayout.Button(buttonText, GUILayout.Height(28)))
             {
-                Undo.RecordObject(_component, "Dennoko Mesh Editor Mirror Toggle");
+                DenMeshEditorUndo.BeginGroup(_component, "Dennoko Mesh Editor Mirror Toggle");
                 _component.mirror = !mirrorActive;
-                EditorUtility.SetDirty(_component);
+                DenMeshEditorUndo.Apply(_component);
+                DenMeshEditorUndo.EndGroup();
 
                 // ミラー設定が変わったら影響範囲と中心を計算し直す
                 if (_hasSelection)

@@ -620,14 +620,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 return;
             }
 
-            // Unity は「同じ Undo グループ・同じ名前」の RecordObject を 1 段にまとめる。
-            // グループが自動で進むのは限られたタイミングだけなので、明示的に切らないと
-            // 複数回のドラッグが 1 段に潰れ、Ctrl+Z で一気に巻き戻る。
-            Undo.IncrementCurrentGroup();
-            Undo.SetCurrentGroupName("Dennoko Mesh Editor");
-
             // 記録より先に半径を書くと変更前の値が取れなくなるので、記録が先
-            Undo.RecordObject(_component, "Dennoko Mesh Editor");
+            DenMeshEditorUndo.BeginGroup(_component, "Dennoko Mesh Editor");
 
             if (_hasPendingRadius)
             {
@@ -645,22 +639,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 target.Edit.SetFrom(target.Working, vertexCount);
             }
 
-            EditorUtility.SetDirty(_component);
-
-            // SerializedObject を経由せずフィールドを直接書き換えているため、
-            // Prefab インスタンス上ではオーバーライドとして記録されるよう明示しておく
-            if (PrefabUtility.IsPartOfPrefabInstance(_component))
-            {
-                PrefabUtility.RecordPrefabInstancePropertyModifications(_component);
-            }
-
-            // RecordObject の差分は通常 MouseUp の直後に自動で確定するが、その MouseUp は
-            // Handles.PositionHandle が既に消費している。自動フラッシュのタイミングに
-            // 頼らず、この場で差分を確定させる
-            Undo.FlushUndoRecordObjects();
-
-            // 直後の無関係な操作がこのグループへ入り込まないように閉じる
-            Undo.IncrementCurrentGroup();
+            DenMeshEditorUndo.Apply(_component);
+            DenMeshEditorUndo.EndGroup();
 
             // 確定したので、プレビューはコンポーネントの内容を読むようになる
             ClearLiveEdits();
