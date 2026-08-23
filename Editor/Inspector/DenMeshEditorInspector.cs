@@ -48,10 +48,12 @@ namespace Dennokoworks.DenMeshEditor.Editor
             {
                 if (component.edits.Count == 0)
                 {
-                    DenMeshEditorUndo.BeginGroup(component, "Add Target to DenMeshEditor");
+                    // ここでグループを切ると、上の GameObject 生成・コンポーネント追加が
+                    // 別の段に取り残され、Ctrl+Z 一回では空の DenMeshEditor が残ってしまう。
+                    // メニュー実行全体で 1 段になるよう、同じグループへ積む
+                    DenMeshEditorUndo.Record(component, "Add Target to DenMeshEditor");
                     component.edits.Add(new MeshEdit { target = renderer });
                     DenMeshEditorUndo.Apply(component);
-                    DenMeshEditorUndo.EndGroup();
                 }
 
                 if (MeshDeltaApplier.GetSharedMesh(renderer) != null)
@@ -251,7 +253,22 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             if (removeAt >= 0)
             {
-                _edits.DeleteArrayElementAtIndex(removeAt);
+                // DeleteArrayElementAtIndex は以降の要素を 1 つずつ手前へ詰めるため、
+                // 後ろに並ぶ編集データ（byte[] blob）の中身まで PropertyModification に
+                // 乗ってしまう。追加時と同じく List を直接操作して、Undo は
+                // スナップショットで積む（理由は DenMeshEditorUndo）
+                serializedObject.ApplyModifiedProperties();
+
+                var component = (DenMeshEditor)target;
+                if (removeAt < component.edits.Count)
+                {
+                    DenMeshEditorUndo.BeginGroup(component, "Remove Dennoko Mesh Editor Target");
+                    component.edits.RemoveAt(removeAt);
+                    DenMeshEditorUndo.Apply(component);
+                    DenMeshEditorUndo.EndGroup();
+                }
+
+                serializedObject.Update();
             }
 
             if (GUILayout.Button(DenMeshEditorLocalization.Tr("inspector.add_target")))

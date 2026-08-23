@@ -110,15 +110,16 @@ namespace Dennokoworks.DenMeshEditor.Editor
             {
                 // スライダーのドラッグは毎フレーム変更を出すので、
                 // 最初の変更時のグループ番号を覚えておき、離したときに 1 段へまとめる。
-                // ここでグループを切らないと、連続した設定変更どうしが 1 段に潰れる
+                // ここでグループを切らないと、連続した設定変更どうしが 1 段に潰れる。
+                //
+                // 記録も最初の 1 回だけ。巻き戻し先はドラッグ開始前の状態であり、
+                // 途中経過は Collapse で捨てられる。毎フレーム記録すると
+                // コンポーネント全体（blob 込み）のコピーがフレーム数だけ積まれる
                 if (_settingsUndoGroup < 0)
                 {
-                    Undo.IncrementCurrentGroup();
-                    _settingsUndoGroup = Undo.GetCurrentGroup();
-                    Undo.SetCurrentGroupName("Dennoko Mesh Editor Settings");
+                    _settingsUndoGroup = DenMeshEditorUndo.BeginGroup(_component, "Dennoko Mesh Editor Settings");
                 }
 
-                DenMeshEditorUndo.Record(_component, "Dennoko Mesh Editor Settings");
                 _hasPendingRadius = false;
                 _component.brushRadius = radius;
                 _component.falloff = falloff;
@@ -134,7 +135,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             if (_settingsUndoGroup >= 0 && Event.current.rawType == EventType.MouseUp)
             {
-                Undo.CollapseUndoOperations(_settingsUndoGroup);
+                DenMeshEditorUndo.Collapse(_settingsUndoGroup);
                 _settingsUndoGroup = -1;
             }
 
