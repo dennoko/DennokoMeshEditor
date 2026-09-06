@@ -3,7 +3,7 @@
 - 調査日: 2026-09-06
 - 現行: Unity 2022.3.22f1 / Built-in RP
 - 目標: Unity 6 (6000.0 LTS) / **BiRP 維持**
-- 共通調査: [`../../../Docs/Impl/unity6-migration-overview.md`](../../../Docs/Impl/unity6-migration-overview.md)
+- 共通調査: [`unity6-migration-overview.md`](unity6-migration-overview.md)
 
 ## 判定
 
@@ -92,7 +92,7 @@ BiRP 依存の描画読み戻しを避けた設計になっており、Unity 6 �
 - メッシュ編集コンポーネントをアップロード時にランタイムから除去するためのマーカー。
 - asmdef の `versionDefines` で `DEN_MESH_EDITOR_VRCSDK` が定義される構成のため、
   SDK 未導入環境でもコンパイル可能。
-- VRChat SDK の Unity 6 対応版を待つ。事前作業は不要。
+- VRChat SDK は Unity 6 対応済みを前提とする。事前作業は不要。
 
 ### 5. NDMF 参照（⛔ 外部依存）
 
@@ -137,7 +137,7 @@ Unity 6 でも true。旧分岐が死にコードになるだけ。**修正不�
 
 ### フェーズ 3（外部依存の Unity 6 対応後）
 
-1. VRChat SDK の Unity 6 対応版を導入
+1. VRChat SDK（Unity 6 対応済み）を導入
 2. NDMF の Unity 6 対応版を導入
 3. 下記チェックリストで動作確認
 
