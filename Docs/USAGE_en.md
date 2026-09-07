@@ -37,10 +37,14 @@ In the Hierarchy, right-click the GameObject with the target mesh (`SkinnedMeshR
 
 - **When added via right-click on a GameObject with a Renderer:**
   The mesh is automatically registered as an edit target and **Edit Mode starts immediately**.
+- **When added with multiple GameObjects selected:**
+  **All selected meshes are registered as edit targets.** Only one component is added, on the GameObject you right-clicked (or, when that cannot be determined, the one selected last).
 - **When added to a GameObject without a Renderer:**
-  Only the component is added. Specify the desired Renderer using **"Add Target"** in the Inspector.
+  Only the component is added. Specify the desired Renderer in the **"Add Target"** field in the Inspector.
 
-If you want to edit multiple meshes together, add Renderers from **"Add Target"** in the Inspector.
+The GameObject that received the component is briefly highlighted in the Hierarchy.
+
+To add more targets later, **drag GameObjects that have a mesh into the empty "Add Target" field** at the bottom of the "Targets" list in the Inspector. You can drop several at once.
 Registering clothing and the avatar body at the same time allows you to blend seams and borders seamlessly.
 
 ### 2. Editing

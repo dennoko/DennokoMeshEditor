@@ -51,9 +51,14 @@
       "en": "Add Target"
     },
     {
+      "key": "inspector.add_target_tooltip",
+      "ja": "編集したいメッシュを持つオブジェクトをここへドラッグ＆ドロップすると、編集対象に追加されます。複数まとめてドロップできます。",
+      "en": "Drag GameObjects with the meshes you want to edit here to add them as targets. You can drop several at once."
+    },
+    {
       "key": "inspector.add_target_prompt",
-      "ja": "編集対象の Renderer を追加してください。",
-      "en": "Please add a target Renderer."
+      "ja": "「対象を追加」の枠へ、編集したいメッシュを持つオブジェクトをドラッグ＆ドロップしてください。",
+      "en": "Drag a GameObject with the mesh you want to edit into the \"Add Target\" field."
     },
     {
       "key": "inspector.warn_no_mesh",
