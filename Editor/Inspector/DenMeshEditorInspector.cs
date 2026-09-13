@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace Dennokoworks.DenMeshEditor.Editor
 {
@@ -21,28 +22,23 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private static GUIStyle _versionLinkStyle;
 
         /// <summary>
-        /// 直近にメニューが実行された時刻。多重実行の抑止に使う（<see cref="AddDenMeshEditorMenuItem"/>）。
+        /// 今回のメニュー実行を処理済みか。多重実行の抑止に使う（<see cref="AddDenMeshEditorMenuItem"/>）。
         /// </summary>
-        private static double _lastMenuInvokeTime = double.NegativeInfinity;
-
-        /// <summary>
-        /// 同一のメニュー実行による連続呼び出しとみなす間隔（秒）。
-        /// Unity 側の呼び出しは同一フレーム内で連続するため、手で 2 回実行できない程度の値で足りる。
-        /// </summary>
-        private const double MenuReentryGuardSeconds = 0.2;
+        private static bool _menuHandled;
 
         [MenuItem("GameObject/dennokoworks/Dennoko Mesh Editor", false, 20)]
         private static void AddDenMeshEditorMenuItem(MenuCommand menuCommand)
         {
             // Unity は複数選択中に GameObject メニューを実行すると、選択オブジェクトの数だけ
             // 同じメニュー項目を連続で呼び出す。ここでは最初の 1 回で選択全体をまとめて処理するので、
-            // 直後に続く呼び出しは捨てる（そうしないと選択の数だけコンポーネントが増える）。
-            var now = EditorApplication.timeSinceStartup;
-            if (now - _lastMenuInvokeTime < MenuReentryGuardSeconds) return;
-            _lastMenuInvokeTime = now;
+            // 同じ実行に続く呼び出しは捨てる（そうしないと選択の数だけコンポーネントが増える）。
+            // 連続呼び出しが終わった後のエディタ更新でフラグを下ろし、次の実行を受け付ける。
+            if (_menuHandled) return;
+            _menuHandled = true;
+            EditorApplication.delayCall += () => _menuHandled = false;
 
             var renderers = CollectSelectedRenderers();
-            var target = ResolveMenuTarget(menuCommand, renderers);
+            var target = ResolveMenuTarget(menuCommand.context != null, renderers);
 
             if (target == null)
             {
@@ -101,19 +97,15 @@ namespace Dennokoworks.DenMeshEditor.Editor
         }
 
         /// <summary>
-        /// 選択中の GameObject から、編集対象になり得る Renderer を選択順に集める。
+        /// 選択中の GameObject から、編集対象になり得る Renderer を集める。
+        /// 並びは <see cref="Selection.gameObjects"/> のままで、選択順や表示順の保証はない。
         /// </summary>
         private static List<Renderer> CollectSelectedRenderers()
         {
             var result = new List<Renderer>();
 
-            foreach (var go in Selection.gameObjects)
+            foreach (var go in CollectSelectedSceneObjects())
             {
-                if (go == null) continue;
-
-                // Project ビューで選択されたプレハブアセットはシーン上の編集対象にならない
-                if (EditorUtility.IsPersistent(go)) continue;
-
                 var renderer = go.GetComponent<Renderer>();
                 if (!IsEditableRenderer(renderer)) continue;
                 if (result.Contains(renderer)) continue;
@@ -124,40 +116,111 @@ namespace Dennokoworks.DenMeshEditor.Editor
             return result;
         }
 
-        /// <summary>
-        /// コンポーネントを付ける GameObject を決める。
-        ///
-        /// <see cref="MenuCommand.context"/> にはメニュー実行の起点になったオブジェクトが入る
-        /// （ヒエラルキーの右クリックならクリックしたオブジェクト）。それが編集対象に含まれていれば
-        /// それを使い、使えなければ「最後に触ったもの」である <see cref="Selection.activeGameObject"/>、
-        /// それも対象外なら選択順で最初の対象へ落とす。
-        /// </summary>
-        private static GameObject ResolveMenuTarget(MenuCommand menuCommand, List<Renderer> renderers)
+        /// <summary>選択中の GameObject のうち、シーン上にあるもの。</summary>
+        private static List<GameObject> CollectSelectedSceneObjects()
         {
-            var context = menuCommand.context as GameObject;
+            var result = new List<GameObject>();
 
-            if (renderers.Count > 0)
+            foreach (var go in Selection.gameObjects)
             {
-                if (Contains(renderers, context)) return context;
-                if (Contains(renderers, Selection.activeGameObject)) return Selection.activeGameObject;
+                if (go == null) continue;
 
-                return renderers[0].gameObject;
+                // Project ビューで選択されたプレハブアセットはシーン上の編集対象にならない
+                if (EditorUtility.IsPersistent(go)) continue;
+
+                result.Add(go);
             }
 
-            // メッシュを 1 つも選んでいない場合は、従来どおり起点のオブジェクトへ付ける
-            return context != null ? context : Selection.activeGameObject;
+            return result;
         }
 
-        private static bool Contains(List<Renderer> renderers, GameObject go)
+        /// <summary>
+        /// コンポーネントを付ける GameObject を決める。上から順に使えるものを採る。
+        ///
+        /// 1. ヒエラルキーで右クリックした行（選択に含まれていれば、メッシュを持たないオブジェクトでもよい）
+        /// 2. <see cref="Selection.activeGameObject"/>（最後に左クリックしたもの）が候補に含まれていればそれ
+        /// 3. 候補のうちヒエラルキーで一番上に表示されているもの
+        ///
+        /// 候補は、メッシュを 1 つでも選んでいればそのメッシュ、選んでいなければ選択中のオブジェクト全体。
+        /// <see cref="MenuCommand.context"/> は複数選択時に右クリックした行を指さないため、付け先には使わない
+        /// （→ <see cref="HierarchyContextClick"/>）。ただし context が null なら上部メニューからの実行なので、
+        /// 以前にキャンセルされた右クリックの記録を拾わないよう 1 を飛ばす（<paramref name="fromContextMenu"/>）。
+        /// </summary>
+        private static GameObject ResolveMenuTarget(bool fromContextMenu, List<Renderer> renderers)
         {
-            if (go == null) return false;
-
-            foreach (var renderer in renderers)
+            if (fromContextMenu && HierarchyContextClick.TryConsumeSelected(out var clicked) && !EditorUtility.IsPersistent(clicked))
             {
-                if (renderer.gameObject == go) return true;
+                return clicked;
             }
 
-            return false;
+            var candidates = renderers.Count > 0
+                ? renderers.ConvertAll(renderer => renderer.gameObject)
+                : CollectSelectedSceneObjects();
+
+            var active = Selection.activeGameObject;
+            if (active != null && candidates.Contains(active)) return active;
+
+            return FindTopmostInHierarchy(candidates);
+        }
+
+        /// <summary>ヒエラルキーで一番上に表示されるものを返す。空なら null。</summary>
+        private static GameObject FindTopmostInHierarchy(List<GameObject> objects)
+        {
+            GameObject best = null;
+            List<int> bestKey = null;
+
+            foreach (var go in objects)
+            {
+                var key = HierarchyOrderKey(go);
+                if (bestKey != null && CompareOrderKeys(key, bestKey) >= 0) continue;
+
+                best = go;
+                bestKey = key;
+            }
+
+            return best;
+        }
+
+        /// <summary>
+        /// ヒエラルキーの表示順を表すキー。シーンの並び、ルートからの兄弟インデックスの順に並べたもの。
+        /// </summary>
+        private static List<int> HierarchyOrderKey(GameObject go)
+        {
+            var key = new List<int>();
+
+            for (var t = go.transform; t != null; t = t.parent)
+            {
+                key.Add(t.GetSiblingIndex());
+            }
+
+            key.Add(SceneOrder(go.scene));
+            key.Reverse();
+
+            return key;
+        }
+
+        private static int SceneOrder(Scene scene)
+        {
+            for (var i = 0; i < SceneManager.sceneCount; i++)
+            {
+                if (SceneManager.GetSceneAt(i) == scene) return i;
+            }
+
+            // Prefab ステージなど、読み込み済みシーンの一覧に無いもの
+            return SceneManager.sceneCount;
+        }
+
+        /// <summary>辞書順で比べる。親は子より前（先頭が一致するなら短い方が上）。</summary>
+        private static int CompareOrderKeys(List<int> a, List<int> b)
+        {
+            var count = Mathf.Min(a.Count, b.Count);
+
+            for (var i = 0; i < count; i++)
+            {
+                if (a[i] != b[i]) return a[i].CompareTo(b[i]);
+            }
+
+            return a.Count.CompareTo(b.Count);
         }
 
         private static bool IsEditableRenderer(Renderer renderer)

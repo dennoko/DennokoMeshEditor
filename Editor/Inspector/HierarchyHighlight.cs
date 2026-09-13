@@ -12,7 +12,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
     internal static class HierarchyHighlight
     {
         /// <summary>色を乗せてから消え切るまでの秒数。</summary>
-        private const double DurationSeconds = 1.2;
+        private const double DurationSeconds = 1.8;
 
         /// <summary>フェードを始めるまで濃さを保つ割合（全体の長さに対する比）。</summary>
         private const double HoldRatio = 0.25;

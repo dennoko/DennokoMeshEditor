@@ -38,7 +38,10 @@ In the Hierarchy, right-click the GameObject with the target mesh (`SkinnedMeshR
 - **When added via right-click on a GameObject with a Renderer:**
   The mesh is automatically registered as an edit target and **Edit Mode starts immediately**.
 - **When added with multiple GameObjects selected:**
-  **All selected meshes are registered as edit targets.** Only one component is added, on the GameObject you right-clicked (or, when that cannot be determined, the one selected last).
+  **All selected meshes are registered as edit targets.** Only one component is added, on the GameObject chosen in this order:
+  1. **The GameObject you right-clicked** (right-click the one you want it on. Any selected GameObject works, including a parent without a mesh)
+  2. When run from somewhere other than a right-click (such as the top menu bar), the mesh you clicked last to select
+  3. Otherwise, the selected mesh that appears highest in the Hierarchy
 - **When added to a GameObject without a Renderer:**
   Only the component is added. Specify the desired Renderer in the **"Add Target"** field in the Inspector.
 
