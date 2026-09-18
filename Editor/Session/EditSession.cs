@@ -57,9 +57,76 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
         internal static EditSession Active => _active;
 
+        private bool _running;
+        internal bool IsRunning => _running;
+
         internal static bool IsActive(DenMeshEditor component)
         {
             return _active != null && _active._component == component;
+        }
+
+        /// <summary>
+        /// 編集セッションを継続可能かどうかの共通条件判定。
+        /// </summary>
+        internal static bool CanContinueEditing(EditSession session)
+        {
+            if (session == null || !session._running) return false;
+            if (session._component == null) return false;
+
+            var go = session._component.gameObject;
+            if (go == null) return false;
+
+            var scene = go.scene;
+            if (!scene.IsValid() || !scene.isLoaded) return false;
+
+            if (!Selection.Contains(go)) return false;
+
+            if (EditorApplication.isPlayingOrWillChangePlaymode) return false;
+            if (EditorApplication.isCompiling) return false;
+
+            return true;
+        }
+
+        /// <summary>
+        /// 現在編集中の元 Renderer およびプロキシ Renderer を集める。
+        ///
+        /// <see cref="TargetState.Proxy"/> は <see cref="Refresh"/> でしか更新されないため、
+        /// それより先に登録された新しいプロキシを <see cref="ProxyRegistry"/> から直接拾う。
+        /// 拾わないと、<c>SelectionVisualController.OnProxyReported</c> が先回りで隠した
+        /// 新プロキシを直後の Reconcile が「desired にない」として戻してしまう。
+        ///
+        /// 差し替え前の古いプロキシも、生存している間は desired に残す。Refresh が
+        /// 参照を貼り替えた時点で desired から外れ、そこで通常表示へ戻る。
+        /// </summary>
+        internal void CollectActiveRenderers(HashSet<Renderer> destination)
+        {
+            if (destination == null) return;
+
+            foreach (var target in _targets)
+            {
+                if (target == null) continue;
+                if (target.Original == null) continue;
+
+                destination.Add(target.Original);
+
+                if (ProxyRegistry.TryGet(target.Original, out var latest)) destination.Add(latest);
+                if (target.Proxy != null) destination.Add(target.Proxy);
+            }
+        }
+
+        /// <summary>
+        /// 指定の Renderer が現在の編集対象の元 Renderer に含まれているか判定する。
+        /// </summary>
+        internal bool IsTargetOriginal(Renderer renderer)
+        {
+            if (renderer == null) return false;
+
+            foreach (var target in _targets)
+            {
+                if (target?.Original == renderer) return true;
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -116,48 +183,68 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 Selection.activeGameObject = component.gameObject;
             }
 
-            _active = new EditSession(component);
-            SceneView.duringSceneGui += _active.OnSceneGui;
-
-            // シーンビューの再描画は描画ループの外側から要求する（理由は OnEditorUpdate）
-            EditorApplication.update += _active.OnEditorUpdate;
-
+            var session = new EditSession(component);
+            _active = session;
             _toolsHiddenBefore = Tools.hidden;
-            Tools.hidden = true;
 
-            // 編集前の形状で描かれる選択アウトラインが編集結果に重なるのを避ける
-            SelectionOutline.Suppress();
+            try
+            {
+                SceneView.duringSceneGui += session.OnSceneGui;
 
-            // プレビューフィルタへ「編集開始」を伝え、プロキシを生成させる
-            ActiveComponent.Value = component;
+                // シーンビューの再描画は描画ループの外側から要求する（理由は OnEditorUpdate）
+                EditorApplication.update += session.OnEditorUpdate;
 
-            UnityEditorInternal.InternalEditorUtility.RepaintAllViews();
+                Tools.hidden = true;
+
+                // プレビューフィルタへ「編集開始」を伝え、プロキシを生成させる
+                ActiveComponent.Value = component;
+
+                // 初期化が完全に完了してから Running にし、選択表示コントローラーと整合させる。
+                // Selection.activeGameObject による Selection.selectionChanged は
+                // Running でないため無視され、自己終了しない
+                session._running = true;
+                SelectionVisualController.Reconcile();
+
+                UnityEditorInternal.InternalEditorUtility.RepaintAllViews();
+            }
+            catch
+            {
+                // 開始途中の失敗でも購読・Tools.hidden・プレビュー状態を残さない。
+                try { End(); }
+                catch (System.Exception ex) { Debug.LogException(ex); }
+                throw;
+            }
         }
 
         internal static void End()
         {
             if (_active == null) return;
 
-            SceneView.duringSceneGui -= _active.OnSceneGui;
-            EditorApplication.update -= _active.OnEditorUpdate;
+            var session = _active;
+            _active = null;
+            session._running = false;
+
+            SceneView.duringSceneGui -= session.OnSceneGui;
+            EditorApplication.update -= session.OnEditorUpdate;
 
             // 後始末は finally に置く。End は beforeAssemblyReload からも呼ばれるため、
             // 上書きインポートの最中など Cleanup が途中で失敗する状況がありうる。そこで
-            // 抜けると Tools.hidden も選択アウトラインも戻らないまま残ってしまう。
+            // 抜けると Tools.hidden も戻らないまま残ってしまう。
             try
             {
-                _active.Cleanup();
+                // 表示の解除に失敗してもメッシュ等の後始末を進める。
+                try { SelectionVisualController.Reconcile(); }
+                finally { session.Cleanup(); }
             }
             finally
             {
-                _active = null;
-
                 // 開始前の状態へ戻す（ユーザーが自分でツールを隠していた場合を潰さない）
-                Tools.hidden = _toolsHiddenBefore;
-                SelectionOutline.Restore();
-                ActiveComponent.Value = null;
-
-                UnityEditorInternal.InternalEditorUtility.RepaintAllViews();
+                try { Tools.hidden = _toolsHiddenBefore; }
+                finally
+                {
+                    try { ActiveComponent.Value = null; }
+                    finally { UnityEditorInternal.InternalEditorUtility.RepaintAllViews(); }
+                }
             }
         }
 
@@ -341,6 +428,14 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// </summary>
         private void OnEditorUpdate()
         {
+            // イベント呼び出しのスナップショットに、終了済みセッションが残る場合がある。
+            if (_active != this) return;
+            if (!CanContinueEditing(this))
+            {
+                End();
+                return;
+            }
+
             // Undo / Redo の後始末。描画ループの外側で、1 フレームにつき 1 回だけ行う
             if (_resyncPending)
             {
@@ -362,14 +457,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
         private void OnSceneGui(SceneView sceneView)
         {
-            if (_component == null)
-            {
-                End();
-                return;
-            }
-
-            // 別のオブジェクトを選択したら編集モードを抜ける（ツール状態を残さないため）
-            if (!Selection.Contains(_component.gameObject))
+            if (_active != this) return;
+            if (!CanContinueEditing(this))
             {
                 End();
                 return;

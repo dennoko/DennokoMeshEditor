@@ -1,117 +1,90 @@
 using System;
 using System.Reflection;
 using UnityEditor;
+using UnityEngine;
 
 namespace Dennokoworks.DenMeshEditor.Editor
 {
     /// <summary>
-    /// 編集セッションの間だけ、シーンビューの選択アウトライン（オレンジの輪郭）を止める。
+    /// 【移行期間限定】旧方式（全体設定 showSelectionOutline を書き換えていた時代）の退避値の復元処理。
     ///
-    /// 編集中に見えている形状は NDMF のプロキシで、元 Renderer は <c>forceRenderingOff</c> で
-    /// 描画されていない。それでも選択アウトラインは元 Renderer の形状（＝編集前の形状）で
-    /// 描かれるため、編集結果の上にずれた輪郭が重なって見づらい。
+    /// 新設計ではグローバル設定の変更を行わないため、新規の抑制処理（Suppress）は廃止された。
+    /// 旧バージョンでエディタが異常終了・強制終了した環境では EditorPrefs にキーが残り、
+    /// Selection Outline が OFF のままになっている可能性があるため、その復元専用として残している。
     ///
-    /// アウトラインは Renderer 単位では切れない。<c>EditorUtility.SetSelectedRenderState</c> は
-    /// 選択ワイヤーフレーム側にしか効かず、アウトラインを制御しているのは Gizmos メニューの
-    /// "Selection Outline" だけで、その実体は internal な
-    /// <c>UnityEditor.AnnotationUtility.showSelectionOutline</c> しかない。そのためリフレクションで触る。
-    ///
-    /// この設定はエディタ全体（全シーンビュー）に効き、EditorPrefs に保存される。
-    /// 勝手に切り替えたまま残さないよう、退避値を EditorPrefs にも書いておき、
-    /// 通常の終了だけでなく「復元前にエディタが落ちた」場合や「セッション中に上書きインポートされた」
-    /// 場合も次の機会に戻す。
-    ///
-    /// 復元は「書き戻せたことを確認できるまで退避値を捨てない」形になっている。
-    /// これが本クラスの自己回復の要で、詳細は <see cref="Restore"/> を参照。
+    /// TODO: v1.4.0（v1.2.4 以前からの移行回収期間終了後）に本ファイルごと削除予定。
     /// </summary>
     internal static class SelectionOutline
     {
-        /// <summary>抑制前の値の退避先。キーが存在する＝こちらが抑制している。</summary>
-        private const string BackupKey = "Dennokoworks.DenMeshEditor.SelectionOutlineBackup";
+        /// <summary>旧方式における退避キー。キーが存在する＝旧版で戻し損ねた可能性がある。</summary>
+        private const string LegacyBackupKey = "Dennokoworks.DenMeshEditor.SelectionOutlineBackup";
+        private const string RestoreMenu = "Tools/Dennoko Mesh Editor/Restore Legacy Selection Outline";
 
         private static PropertyInfo _property;
 
         /// <summary>
-        /// 復元前にエディタが落ちていた・上書きインポートで復元し損ねていた場合の後始末。
-        ///
-        /// 編集セッションはドメインリロードを跨いで生き残らない（<c>EditSession.End</c> が
-        /// <c>beforeAssemblyReload</c> で必ず走る）ため、起動時に退避値が残っていれば
-        /// それは戻しそこねた分だと判断できる。
-        ///
-        /// このタイミングでは AnnotationUtility へ書き込めないことがあるので、
-        /// 一度試したうえで <c>delayCall</c> でもう一度試す。失敗しても
-        /// <see cref="Restore"/> が退避値を残すため、後から実行される方が拾う。
+        /// 共有キーの所有者は分からない。別 Unity の復元情報を消さず、復旧方法を案内する。
         /// </summary>
         [InitializeOnLoadMethod]
         private static void RestoreLeftover()
         {
-            Restore();
-            EditorApplication.delayCall += Restore;
+            EditorApplication.delayCall += () =>
+            {
+                if (!EditorPrefs.HasKey(LegacyBackupKey)) return;
+                Debug.LogWarning("[DennokoMeshEditor] 旧版のアウトライン退避情報が残っています。"
+                    + "旧版で編集中の他の Unity を終了後、" + RestoreMenu + " から復元できます。");
+            };
         }
 
-        internal static void Suppress()
+        [MenuItem(RestoreMenu)]
+        private static void RestoreFromMenu()
         {
-            // 二重に抑制すると「抑制中の値」を退避してしまう
-            if (EditorPrefs.HasKey(BackupKey)) return;
-
-            var property = ResolveProperty();
-            if (property == null) return;
-
-            try
-            {
-                // ユーザーが自分で切っている場合は何もしない（戻すときに勝手に点けないため）
-                if (!(bool)property.GetValue(null)) return;
-
-                EditorPrefs.SetBool(BackupKey, true);
-                property.SetValue(null, false);
-            }
-            catch
-            {
-                // internal API のアクセス失敗時は何もしない
-            }
+            if (EditorUtility.DisplayDialog("選択アウトラインの復元",
+                "旧版で編集中の他の Unity は終了していますか？\n"
+                + "退避情報は複数の Unity で共有されています。復元すると共有の退避情報を削除します。",
+                "復元", "キャンセル")) RestoreLegacyBackup();
         }
+
+        [MenuItem(RestoreMenu, true)]
+        private static bool CanRestoreFromMenu() => EditorPrefs.HasKey(LegacyBackupKey);
 
         /// <summary>
-        /// 退避値を書き戻す。退避値が無ければ（＝こちらが抑制していなければ）何もしない。
-        ///
-        /// キーを消すのは書き戻しを確認できたときだけにしてある。先に消してしまうと、
-        /// リフレクションの解決に失敗した回・書き込みが効かなかった回に退避値が失われ、
-        /// 「アウトラインが消えたまま二度と戻らない」状態になる。
-        /// 残っている限りは起動時・<c>delayCall</c>・Inspector 表示時のいずれかが再試行する。
+        /// 旧退避キーが存在する場合にのみ、AnnotationUtility.showSelectionOutline を書き戻す。
+        /// 書き戻しが確認できた場合のみキーを削除する。
         /// </summary>
-        internal static void Restore()
+        internal static void RestoreLegacyBackup()
         {
-            if (!EditorPrefs.HasKey(BackupKey)) return;
+            if (!EditorPrefs.HasKey(LegacyBackupKey)) return;
 
-            var previous = EditorPrefs.GetBool(BackupKey);
+            var previous = EditorPrefs.GetBool(LegacyBackupKey);
 
             var property = ResolveProperty();
-            if (property == null) return;
+            if (property == null)
+            {
+                Debug.LogWarning("[DennokoMeshEditor] Selection Outline API が見つからないため復元できません。退避情報は保持します。");
+                return;
+            }
 
             try
             {
                 property.SetValue(null, previous);
 
                 // 書き込みが効いたかを読み返して確認する
-                if ((bool)property.GetValue(null) != previous) return;
+                if ((bool)property.GetValue(null) != previous)
+                    throw new InvalidOperationException("Selection Outline の復元を確認できませんでした。");
             }
-            catch
+            catch (Exception ex)
             {
-                // internal API のアクセス失敗時は退避値を残して次の機会に回す
+                // internal API アクセス失敗時はキーを残して次回に回す
+                Debug.LogWarning("[DennokoMeshEditor] アウトラインの復元に失敗しました。退避情報は保持します: " + ex.Message);
                 return;
             }
 
-            EditorPrefs.DeleteKey(BackupKey);
+            EditorPrefs.DeleteKey(LegacyBackupKey);
             SceneView.RepaintAll();
+            Debug.Log("[DennokoMeshEditor] Restored legacy selection outline setting.");
         }
 
-        /// <summary>
-        /// internal API なので、見つからなければ黙って諦める（アウトラインが出るだけで編集はできる）。
-        /// 将来の Unity で移動・改名されてもツールが壊れないようにする。
-        ///
-        /// 失敗はキャッシュしない。ドメインリロード直後など、まだ解決できない時点で
-        /// 「見つからない」を覚え込むと、そのドメインの間ずっと抑制も復元もできなくなる。
-        /// </summary>
         private static PropertyInfo ResolveProperty()
         {
             if (_property != null) return _property;
@@ -134,7 +107,6 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
         private static Type FindAnnotationUtility()
         {
-            // AnnotationUtility は UnityEditor.CoreModule にある。EditorUtility も同じアセンブリ
             var type = typeof(EditorUtility).Assembly.GetType("UnityEditor.AnnotationUtility");
             if (type != null) return type;
 
