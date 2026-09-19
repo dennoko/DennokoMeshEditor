@@ -144,10 +144,41 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private readonly List<Candidate> _candidates = new List<Candidate>();
         private readonly List<TriangleRef> _nearbyTriangles = new List<TriangleRef>();
 
+        /// <summary>Unity が選択中の Renderer へ既定で使う描画状態。</summary>
+        private const EditorSelectedRenderState DefaultSelectedRenderState =
+            EditorSelectedRenderState.Highlight | EditorSelectedRenderState.Wireframe;
+
+        /// <summary>
+        /// 編集対象の選択時表示（選択ワイヤーフレームなど）を止める／戻す。
+        ///
+        /// 編集中に見えている形状は NDMF のプロキシで、元 Renderer は
+        /// <c>forceRenderingOff</c> で描画されていない。それでもこれらは元 Renderer の形状
+        /// （＝編集前の形状）で描かれるため、編集結果の上にずれた線が重なって見づらくなる。
+        ///
+        /// なお選択アウトライン（オレンジの輪郭）はこの状態を見ておらず、ここでは消せない。
+        /// そちらは <see cref="SelectionOutline"/> が担当する。
+        ///
+        /// 現在の状態を読み出す API は無いため、戻すときは Unity の既定値を書く。
+        /// </summary>
+        private static void SetSelectedRenderState(Renderer renderer, bool visible)
+        {
+            if (renderer == null) return;
+
+            EditorUtility.SetSelectedRenderState(
+                renderer,
+                visible ? DefaultSelectedRenderState : EditorSelectedRenderState.Hidden);
+        }
+
         private void DisposeTargets()
         {
             foreach (var target in _targets)
             {
+                SetSelectedRenderState(target.Original, true);
+                if (target.Proxy != null && target.Proxy != target.Original)
+                {
+                    SetSelectedRenderState(target.Proxy, true);
+                }
+
                 if (target.BakeScratch != null) Object.DestroyImmediate(target.BakeScratch);
             }
 
@@ -170,16 +201,22 @@ namespace Dennokoworks.DenMeshEditor.Editor
             // 形状が実際に変わったときだけ世代を進める。
             // Refresh は 0.1 秒ごとに走るので、ここで無条件に進めるとスクリーン座標キャッシュが
             // 秒 10 回必ず捨てられ、ホバー中の O(頂点数) 射影とグリッド構築が毎回走ってしまう
-            var targetsRebuilt = SyncTargetList();
-            var geometryChanged = targetsRebuilt;
+            var geometryChanged = SyncTargetList();
 
             var anyFallback = false;
             var anyVertexCountMismatch = false;
-            var proxyChanged = false;
 
             foreach (var target in _targets)
             {
                 var proxy = ProxyRegistry.ResolveOrOriginal(target.Original, out var usingProxy);
+
+                // 選択時表示の状態は、選択内容が変わると Unity 側で既定値へ戻る。
+                // 追加選択などでセッションを抜けないまま復活しうるので、毎回書き直しておく
+                SetSelectedRenderState(target.Original, false);
+                if (proxy != null && proxy != target.Original)
+                {
+                    SetSelectedRenderState(proxy, false);
+                }
 
                 // 下流の NDMF フィルタが頂点数を変えている場合、プロキシから読んだ頂点位置と
                 // 元メッシュのインデックスで保存するデルタの対応が取れない。
@@ -198,7 +235,6 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 {
                     target.Proxy = proxy;
                     target.Skinned = proxy as SkinnedMeshRenderer;
-                    proxyChanged = true;
                 }
 
                 // プレビュー用メッシュはパイプライン再構築のたびに作り直されるため、
@@ -249,14 +285,6 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 {
                     _geometryGeneration++;
                 }
-            }
-
-            // 対象の顔ぶれかプロキシが変わったときだけ即時に整合させる。
-            // 頂点が動いただけ（geometryChanged）では選択表示は変わらないので呼ばない。
-            // Hidden の貼り直しは SelectionVisualController の定期更新が担当する
-            if (targetsRebuilt || proxyChanged)
-            {
-                SelectionVisualController.Reconcile();
             }
 
             AnyFallback = anyFallback;

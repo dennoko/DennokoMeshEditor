@@ -28,9 +28,6 @@ namespace Dennokoworks.DenMeshEditor.Editor
             var isNew = !Map.ContainsKey(original);
             Map[original] = proxy;
 
-            // 編集中の対象であれば初回描画前に即座にアウトライン／ワイヤーを抑制する
-            SelectionVisualController.OnProxyReported(original, proxy);
-
             // Report は毎フレーム全 Renderer に対して呼ばれるので、掃除は
             // 「新しいキーが増えて、しきい値を超えたとき」だけに限る。
             // 編集セッションを一度も開かないまま破棄済み Renderer が溜まるのを防ぐ
