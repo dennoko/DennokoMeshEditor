@@ -63,6 +63,33 @@ namespace Dennokoworks.DenMeshEditor.Editor
         }
 
         /// <summary>
+        /// 編集セッションを継続可能かどうかの共通条件判定。
+        ///
+        /// 呼び出し側で「自分が現行セッションか」（<c>_active == this</c>）は済ませておくこと。
+        /// ここは「現行セッションが編集を続けられる状況か」だけを見る。
+        /// </summary>
+        private static bool CanContinueEditing(EditSession session)
+        {
+            if (session == null) return false;
+            if (session._component == null) return false;
+
+            var go = session._component.gameObject;
+            if (go == null) return false;
+
+            // シーンを閉じた直後は GameObject が生きていてもシーンが無効になる
+            var scene = go.scene;
+            if (!scene.IsValid() || !scene.isLoaded) return false;
+
+            // 別のオブジェクトを選択したら編集モードを抜ける（ツール状態を残さないため）
+            if (!Selection.Contains(go)) return false;
+
+            if (EditorApplication.isPlayingOrWillChangePlaymode) return false;
+            if (EditorApplication.isCompiling) return false;
+
+            return true;
+        }
+
+        /// <summary>
         /// エディタのライフサイクルに合わせてセッションを確実に閉じる。
         ///
         /// これが無いと、ドメインリロード時に <see cref="Cleanup"/> が走らず
@@ -116,44 +143,65 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 Selection.activeGameObject = component.gameObject;
             }
 
-            _active = new EditSession(component);
-            SceneView.duringSceneGui += _active.OnSceneGui;
+            var session = new EditSession(component);
+            _active = session;
 
-            // シーンビューの再描画は描画ループの外側から要求する（理由は OnEditorUpdate）
-            EditorApplication.update += _active.OnEditorUpdate;
-
+            // 退避は try の外で取る。中で失敗して End へ入ったときに、
+            // 書き換え前の値が入っていないと Tools.hidden を戻せない
             _toolsHiddenBefore = Tools.hidden;
-            Tools.hidden = true;
 
-            // プレビューフィルタへ「編集開始」を伝え、プロキシを生成させる
-            ActiveComponent.Value = component;
+            try
+            {
+                SceneView.duringSceneGui += session.OnSceneGui;
 
-            UnityEditorInternal.InternalEditorUtility.RepaintAllViews();
+                // シーンビューの再描画は描画ループの外側から要求する（理由は OnEditorUpdate）
+                EditorApplication.update += session.OnEditorUpdate;
+
+                Tools.hidden = true;
+
+                // プレビューフィルタへ「編集開始」を伝え、プロキシを生成させる
+                ActiveComponent.Value = component;
+
+                UnityEditorInternal.InternalEditorUtility.RepaintAllViews();
+            }
+            catch
+            {
+                // 開始途中の失敗でも購読・Tools.hidden・プレビュー状態を残さない
+                try { End(); }
+                catch (System.Exception ex) { Debug.LogException(ex); }
+                throw;
+            }
         }
 
         internal static void End()
         {
             if (_active == null) return;
 
-            SceneView.duringSceneGui -= _active.OnSceneGui;
-            EditorApplication.update -= _active.OnEditorUpdate;
+            // 先に _active を降ろす。後始末の途中から End が再入しても二重に走らせない
+            var session = _active;
+            _active = null;
+
+            SceneView.duringSceneGui -= session.OnSceneGui;
+            EditorApplication.update -= session.OnEditorUpdate;
 
             // 後始末は finally に置く。End は beforeAssemblyReload からも呼ばれるため、
             // 上書きインポートの最中など Cleanup が途中で失敗する状況がありうる。そこで
             // 抜けると Tools.hidden が戻らないまま残ってしまう。
+            //
+            // finally を入れ子にしているのは、どれか一つが投げても残りを必ず通すため。
             try
             {
-                _active.Cleanup();
+                session.Cleanup();
             }
             finally
             {
-                _active = null;
-
                 // 開始前の状態へ戻す（ユーザーが自分でツールを隠していた場合を潰さない）
-                Tools.hidden = _toolsHiddenBefore;
-                ActiveComponent.Value = null;
-
-                UnityEditorInternal.InternalEditorUtility.RepaintAllViews();
+                try { Tools.hidden = _toolsHiddenBefore; }
+                finally
+                {
+                    try { ActiveComponent.Value = null; }
+                    finally { UnityEditorInternal.InternalEditorUtility.RepaintAllViews(); }
+                }
             }
         }
 
@@ -337,6 +385,17 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// </summary>
         private void OnEditorUpdate()
         {
+            // イベント呼び出しのスナップショットに、終了済みセッションが残る場合がある。
+            // ここで End() を呼ぶと現行セッションを巻き込むので、黙って抜ける
+            if (_active != this) return;
+
+            // Scene ビューが描画されていなくても、ここで終了判定が進む
+            if (!CanContinueEditing(this))
+            {
+                End();
+                return;
+            }
+
             // Undo / Redo の後始末。描画ループの外側で、1 フレームにつき 1 回だけ行う
             if (_resyncPending)
             {
@@ -358,14 +417,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
         private void OnSceneGui(SceneView sceneView)
         {
-            if (_component == null)
-            {
-                End();
-                return;
-            }
+            if (_active != this) return;
 
-            // 別のオブジェクトを選択したら編集モードを抜ける（ツール状態を残さないため）
-            if (!Selection.Contains(_component.gameObject))
+            if (!CanContinueEditing(this))
             {
                 End();
                 return;
