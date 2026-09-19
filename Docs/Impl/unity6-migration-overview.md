@@ -33,7 +33,7 @@ Unity 6 対応時期** に絞られる。これらに依存しないツールは
 |---|---|
 | ✅ 対応済（修正不要・検証のみ） | FolderCleaner, HairFlowNormalGenerator, HowManyPolygons, MeshSplitter, Normalmap_generator, ScaleLink, UniTexEditor, Wire_skybox, 缶バッチ |
 | ⚠️ 要修正（Obsolete API あり） | CableGenerator, DirectionalLightController, HairChimeraTool, SocksTuku-ru |
-| 🔍 要検証（内部 API リフレクション依存） | AtlasCraft, BoxWeightTransfer, DenEmo, DenLattice, DennokoMeshEditor, DennokoPSDEditor, Uni-Shooting, Uni-Vader |
+| 🔍 要検証（内部 API リフレクション依存） | AtlasCraft, BoxWeightTransfer, DenEmo, DenLattice, DennokoPSDEditor, Uni-Shooting, Uni-Vader |
 | ⛔ 外部依存待ち（自コード側は準備完了） | Avatar_scale_specify, DennokoEx, MatcapMaker_forUnity, NdmfObjectActivater, ShadowEx |
 
 複数に該当するツールもある（例: CableGenerator は ⚠️ と 🔍 の両方）。詳細は各ツールのドキュメントを参照。
@@ -132,10 +132,13 @@ Unity 6 対応時期** に絞られる。これらに依存しないツールは
 | 対象 | 使用箇所 | 用途 | 失敗時の挙動 |
 |---|---|---|---|
 | `UnityEditor.Unwrap` / `UnwrapParam` | `AtlasCraft/Editor/Core/UV2Repacker.cs:117-133` | UV2 自動生成 (`GenerateSecondaryUVSet`) | ガードあり。手動パックへフォールバック |
-| `UnityEditor.AnnotationUtility.showSelectionOutline` | `DenLattice/Editor/Session/SelectionOutline.cs:124-145`<br>`DennokoMeshEditor/Editor/Session/SelectionOutline.cs:124-145` | 編集中の選択アウトライン抑制 | ガードあり。アウトラインが出たままになる |
+| `UnityEditor.AnnotationUtility.showSelectionOutline` | `DenLattice/Editor/Session/SelectionOutline.cs:124-145` | 編集中の選択アウトライン抑制 | ガードあり。アウトラインが出たままになる |
 | `UnityEditor.AudioUtil.PlayPreviewClip(AudioClip,int,bool)` / `StopAllPreviewClips()` | `Uni-Shooting/Editor/Audio/SfxPlayer.cs:29-34`<br>`Uni-Vader/Editor/Audio/SfxPlayer.cs:29-34` | 効果音再生 | ガードあり（`Available` プロパティ）。無音になる |
 | `UnityEditor.Splines.SplineContainerEditor` + 非 public `OnSceneGUI` | `CableGenerator/Editor/SplineContainerEditor/CableSplineContainerEditor.cs:54,119` | 標準 Spline インスペクタへのフォールバック | ガードあり。`DrawDefaultInspector` へ縮退 |
 | `nadena.dev.ndmf.preview.PreviewSession` の非 public プロパティ | `BoxWeightTransfer/Editor/PreviewMeshProvider.cs:78-84`<br>`DenEmo/Editor/DenEmoWindow.VertexFilter.cs:239-250`<br>`HairChimeraTool/Editor/Services/NdmfPreviewBridge.cs:75-76` | NDMF プレビュー結果メッシュの取得 | ガードあり。ベイク済みメッシュへフォールバック |
+
+> **DennokoMeshEditor にも同一の `showSelectionOutline` 実装があったが、v1.2.5 で機能ごと廃止した。**
+> 同ツールの UnityEditor 内部 API 依存は 0 件になっている。DenLattice 側は未対応のまま。
 
 **評価**: いずれも `null` チェックとフォールバック経路を持ち、**壊れても例外を投げず機能縮退する**設計に
 なっている。したがって Unity 6 で「動かなくなる」のではなく「**気付かないまま機能が消える**」のが

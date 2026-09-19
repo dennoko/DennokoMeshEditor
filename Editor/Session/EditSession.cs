@@ -125,9 +125,6 @@ namespace Dennokoworks.DenMeshEditor.Editor
             _toolsHiddenBefore = Tools.hidden;
             Tools.hidden = true;
 
-            // 編集前の形状で描かれる選択アウトラインが編集結果に重なるのを避ける
-            SelectionOutline.Suppress();
-
             // プレビューフィルタへ「編集開始」を伝え、プロキシを生成させる
             ActiveComponent.Value = component;
 
@@ -143,7 +140,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             // 後始末は finally に置く。End は beforeAssemblyReload からも呼ばれるため、
             // 上書きインポートの最中など Cleanup が途中で失敗する状況がありうる。そこで
-            // 抜けると Tools.hidden も選択アウトラインも戻らないまま残ってしまう。
+            // 抜けると Tools.hidden が戻らないまま残ってしまう。
             try
             {
                 _active.Cleanup();
@@ -154,7 +151,6 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
                 // 開始前の状態へ戻す（ユーザーが自分でツールを隠していた場合を潰さない）
                 Tools.hidden = _toolsHiddenBefore;
-                SelectionOutline.Restore();
                 ActiveComponent.Value = null;
 
                 UnityEditorInternal.InternalEditorUtility.RepaintAllViews();

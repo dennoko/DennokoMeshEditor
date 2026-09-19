@@ -7,8 +7,9 @@
 
 ## 判定
 
-🔍 **要検証** ＋ ⛔ **外部依存あり** — Unity 6 非対応の API は **0 件**。修正すべきコードはない。
-UnityEditor 内部 API へのリフレクションが 1 箇所あり、Unity 6 上での実動作確認が必要。
+⛔ **外部依存あり** — Unity 6 非対応の API は **0 件**。修正すべきコードはない。
+UnityEditor 内部 API へのリフレクションも **0 件**（v1.2.5 で唯一の該当箇所だった
+選択アウトライン抑制を廃止したため）。残る作業は外部依存の Unity 6 対応待ちのみ。
 
 ## 構成
 
@@ -23,40 +24,30 @@ UnityEditor 内部 API へのリフレクションが 1 箇所あり、Unity 6 �
 `versionDefines` により `DEN_MESH_EDITOR_VRCSDK` が定義される設計で、
 SDK 未導入環境でもコンパイルが通るよう配慮されている。
 
-DenLattice と設計・構成が近く、`SelectionOutline.cs` は同一実装。
+DenLattice と設計・構成が近い。かつて同一実装だった `SelectionOutline.cs` は
+v1.2.5 で廃止済み（→ 検出事項 1）。DenLattice 側には**まだ残っている**。
 
 ## 検出事項
 
-### 1. `UnityEditor.AnnotationUtility` へのリフレクション（🔍 要検証・本ツール最大のリスク）
+### 1. `UnityEditor.AnnotationUtility` へのリフレクション（✅ 解消済み）
 
-`Editor/Session/SelectionOutline.cs:124-145`
+v1.2.4 まで `Editor/Session/SelectionOutline.cs` が internal API の
+`UnityEditor.AnnotationUtility.showSelectionOutline` をリフレクションで書き換え、
+編集中の選択アウトライン（オレンジ枠）を抑制していた。本ツール最大の Unity 6 リスクだった。
 
-```csharp
-var type = typeof(EditorUtility).Assembly.GetType("UnityEditor.AnnotationUtility");
-...
-var property = type.GetProperty("showSelectionOutline",
-                   BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-```
+**v1.2.5 で機能ごと廃止した。** Unity 全体の永続設定を書き換える方式のため、抑制中に
+エディタが落ちると設定が OFF のまま取り残されるなど、副作用が機能の価値に見合わなかった。
+編集中にアウトラインが気になる場合は、Scene ビューの Gizmos メニューの
+"Selection Outline" をユーザー自身が切り替える。
 
-- `UnityEditor.AnnotationUtility.showSelectionOutline` は **Unity 本体の internal API**。
-  メッシュ編集中に SceneView の選択アウトライン（オレンジ枠）を一時的に抑制するために使用。
-- Unity 6 で改名・移動・削除されてもコンパイルエラーにならず、静かに解決失敗する。
-- 実装は非常に防御的:
-  - `typeof(EditorUtility).Assembly` を優先して探し、見つからなければ全アセンブリを走査（`:138-145`）
-  - プロパティ型が `bool` で読み書き可能であることまで検証
-  - **失敗をキャッシュしない**（ドメインリロード直後の未解決状態を覚え込まないための配慮）
+`SelectionOutline.cs` はファイルと GUID だけを空の中身で残してある。上書きインポートで
+既存ユーザーの環境から旧実装を確実に消すためで、コードは 1 行も無い。回収期間が終わったら
+（v1.4.0 目安）ファイルごと削除する。
 
-**Unity 6 で起きること**: 例外は出ず、**編集中に選択アウトラインが出たままになる**だけ。
-頂点編集そのものは動作するが、アウトラインが編集対象の頂点表示と重なって見づらくなる。
+**これにより、本ツールの UnityEditor 内部 API 依存は 0 件になった。**
 
-**対応**
-
-1. Unity 6 上でメッシュ編集を開始し、選択アウトラインが消えるか目視確認する。
-2. 解決失敗時に一度だけ警告ログを出す（本実装は失敗をキャッシュしない設計なので、
-   毎フレーム出力しないようフラグ管理に注意する）。
-
-> **同一実装が `DenLattice/Editor/Session/SelectionOutline.cs` にも存在する。
-> 片方を修正したらもう片方も同じ修正を入れること。**
+> **`DenLattice/Editor/Session/SelectionOutline.cs` には同一実装がまだ残っている。
+> DenLattice 側でも同じ判断をするなら、同様に撤去すること。**
 
 ### 2. 頂点プレビューと SceneView 描画（✅ 影響なし）
 
@@ -130,9 +121,8 @@ Unity 6 でも true。旧分岐が死にコードになるだけ。**修正不�
 
 ### フェーズ 1（Unity 2022.3.22f1 のまま実施可）
 
-- [ ] `SelectionOutline.ResolveProperty()` の解決失敗時に警告ログを追加
-      （毎フレーム出力しないようフラグ管理する。失敗をキャッシュしない設計は維持すること）
-- [ ] 同じ修正を `DenLattice/Editor/Session/SelectionOutline.cs` にも適用
+- [x] `SelectionOutline` の internal API リフレクションを撤去（v1.2.5 で機能ごと廃止）
+- [ ] `DenLattice/Editor/Session/SelectionOutline.cs` の扱いを決める（撤去するか維持するか）
 - [ ] `MenuItem("Tools/Your Tool Name")` というテンプレート由来の未整理メニュー項目の確認
 
 ### フェーズ 3（外部依存の Unity 6 対応後）
