@@ -21,7 +21,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
             /// <summary>上流ノードが出力したメッシュ。デルタ加算の基準。</summary>
             public Mesh Source;
 
-            /// <summary><see cref="Source"/> の頂点と、その変化の検出。</summary>
+            /// <summary>
+            /// <see cref="Source"/> の頂点と、その変化の検出。同じ上流メッシュを参照する Renderer 同士で
+            /// 共有される（<see cref="UpstreamVertexCache"/>）ので、読み取り専用として扱う。
+            /// </summary>
             public UpstreamVertices Upstream;
 
             /// <summary>自分が生成したメッシュ。編集が無ければ null。</summary>
@@ -106,7 +109,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
             if (upstream != entry.Source && upstream != entry.Generated)
             {
                 entry.Source = upstream;
-                entry.Upstream = new UpstreamVertices(upstream);
+                UpstreamVertexCache.Release(entry.Upstream);
+                entry.Upstream = UpstreamVertexCache.Acquire(upstream);
                 entry.HasApplied = false;
                 DestroyGenerated(entry);
             }
@@ -325,6 +329,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 ProxyRegistry.Remove(entry.Original, entry.Proxy);
                 DownstreamGuard.Forget(this, entry.Original);
                 DestroyGenerated(entry);
+
+                UpstreamVertexCache.Release(entry.Upstream);
+                entry.Upstream = null;
             }
 
             _entries.Clear();
