@@ -113,7 +113,24 @@ namespace Dennokoworks.DenMeshEditor.Editor
             var readAll = !_hasRead || now >= _nextFullRead;
             if (!readAll && ProbeSamples() != SampleResult.Unchanged) readAll = true;
 
-            if (readAll) ReadAll(now, context);
+            if (!readAll) return;
+
+            try
+            {
+                ReadAll(now, context);
+            }
+            catch (Exception e)
+            {
+                // GetVertices が例外を投げても NDMF の後続ノードを止めない。
+                // 前回読めた頂点と世代は維持し、次のプローブで全件読み直しを再試行する。
+                if (_warnedNotReadable) return;
+
+                _warnedNotReadable = true;
+                Debug.LogWarning(
+                    $"[Dennoko Mesh Editor] 上流メッシュの頂点を読み取れませんでした。"
+                    + $"次のプローブで再試行します。 ({e.GetType().Name}: {e.Message})",
+                    context);
+            }
         }
 
         /// <summary>
@@ -121,8 +138,6 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// </summary>
         private void ReadAll(double now, Object context)
         {
-            _nextFullRead = now + FullReadInterval * (0.75 + 0.5 * _phase);
-
             PreviewStats.CountFullRead();
             Mesh.GetVertices(_scratch);
 
@@ -155,6 +170,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             _hasRead = true;
             TakeSamples();
+            _nextFullRead = now + FullReadInterval * (0.75 + 0.5 * _phase);
+            _warnedNotReadable = false;
         }
 
         /// <summary>
