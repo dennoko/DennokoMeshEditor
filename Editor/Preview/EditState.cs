@@ -108,6 +108,29 @@ namespace Dennokoworks.DenMeshEditor.Editor
             }
         }
 
+        /// <summary>
+        /// 1 コンポーネント分のうち、<paramref name="targets"/> に含まれる Renderer を対象にする
+        /// 編集の比較値を末尾へ追加する。NDMF の監視（1 ノードが複数 Renderer を持ちうる）用。
+        /// </summary>
+        internal static void AppendFrom(DenMeshEditor component, HashSet<Renderer> targets,
+            List<EditState> destination, bool includeLive)
+        {
+            if (component == null) return;
+
+            var edits = component.edits;
+            for (var i = 0; i < edits.Count; i++)
+            {
+                var edit = edits[i];
+                if (edit == null) continue;
+
+                // 破棄済みの Renderer は、合成側（target との != 比較）と同様に対象外とする
+                var target = edit.target;
+                if (target == null || !targets.Contains(target)) continue;
+
+                destination.Add(new EditState(edit, includeLive ? LiveEdits.GetStamp(edit) : 0));
+            }
+        }
+
         internal static bool SequenceEqual(List<EditState> a, List<EditState> b)
         {
             if (a.Count != b.Count) return false;
@@ -115,6 +138,54 @@ namespace Dennokoworks.DenMeshEditor.Editor
             for (var i = 0; i < a.Count; i++)
             {
                 if (!a[i].Equals(b[i])) return false;
+            }
+
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// NDMF の監視（<c>ComputeContext.Observe</c>）に渡す、<see cref="EditState"/> 列の不変スナップショット。
+    ///
+    /// NDMF は抽出値を保持して後の抽出値と比較関数で比べるため、抽出値は後から書き換わらない
+    /// オブジェクトでなければならない。比較は要素ごとの完全一致で行い、ハッシュだけで判定しない。
+    /// </summary>
+    internal sealed class EditSnapshot
+    {
+        private readonly EditState[] _states;
+
+        private EditSnapshot(List<EditState> states)
+        {
+            _states = states.ToArray();
+        }
+
+        internal static EditSnapshot From(List<EditState> states)
+        {
+            return new EditSnapshot(states);
+        }
+
+        /// <summary>内容が <paramref name="states"/> と完全に一致するか。確保しない。</summary>
+        internal bool Matches(List<EditState> states)
+        {
+            if (_states.Length != states.Count) return false;
+
+            for (var i = 0; i < _states.Length; i++)
+            {
+                if (!_states[i].Equals(states[i])) return false;
+            }
+
+            return true;
+        }
+
+        internal static bool AreEqual(EditSnapshot a, EditSnapshot b)
+        {
+            if (ReferenceEquals(a, b)) return true;
+            if (a == null || b == null) return false;
+            if (a._states.Length != b._states.Length) return false;
+
+            for (var i = 0; i < a._states.Length; i++)
+            {
+                if (!a._states[i].Equals(b._states[i])) return false;
             }
 
             return true;

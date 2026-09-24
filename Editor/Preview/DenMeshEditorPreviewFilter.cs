@@ -97,16 +97,23 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// </summary>
         internal static void ObserveNodeInputs(
             ComputeContext context,
-            IEnumerable<DenMeshEditor> components,
+            IReadOnlyList<DenMeshEditor> components,
             IEnumerable<Renderer> originals)
         {
+            // このノードが担当する Renderer。監視はこの Renderer を対象にする編集だけに絞る
+            var targets = new HashSet<Renderer>();
+            foreach (var original in originals)
+            {
+                if (original != null) targets.Add(original);
+            }
+
             foreach (var component in components)
             {
                 if (component == null) continue;
-                ObserveEdits(context, component);
+                ObserveEdits(context, component, targets);
             }
 
-            ObserveDownstreamSync(context, originals);
+            ObserveDownstreamSync(context, components, targets);
         }
 
         /// <summary>
@@ -115,8 +122,19 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// この経路に入ると、ドラッグ中の更新のたびにパイプラインが作り直されて重くなる。
         /// そのため、上書きが実際に検出された対象でだけ監視を張る。検出されていない通常時は
         /// 誰も見ていないので、<see cref="LiveEdits.Invalidate"/> はパイプラインに影響しない。
+        ///
+        /// <see cref="LiveEdits.SyncedVersion"/> は全体で 1 つの値だが、無効化するかどうかは
+        /// 「このノードが担当する編集の比較値（未確定データのスタンプを含む）」が変わったかで決める。
+        /// 別の対象をドラッグしても、このノードと下流は作り直されない。
+        ///
+        /// これはドラッグ中の同期を対象に絞るための監視。セッション外の Undo や Prefab の Revert は
+        /// <see cref="LiveEdits.SyncedVersion"/> を進めないので、その場合の下流の更新は
+        /// <see cref="ObserveEdits"/> の監視が保証する。
         /// </summary>
-        private static void ObserveDownstreamSync(ComputeContext context, IEnumerable<Renderer> originals)
+        private static void ObserveDownstreamSync(
+            ComputeContext context,
+            IReadOnlyList<DenMeshEditor> components,
+            HashSet<Renderer> targets)
         {
             // ラッチの成立そのものをノードの再構築契機にする。
             // これが無いと、検出した時点では誰も SyncedVersion を見ていないため
@@ -124,7 +142,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             context.Observe(DownstreamGuard.OverrideGeneration, v => v, (a, b) => a == b);
 
             var overridden = false;
-            foreach (var original in originals)
+            foreach (var original in targets)
             {
                 if (!DownstreamGuard.IsOverridden(original)) continue;
 
@@ -134,7 +152,22 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             if (!overridden) return;
 
-            context.Observe(LiveEdits.SyncedVersion, v => v, (a, b) => a == b);
+            // 抽出は SyncedVersion が変わったとき（最短 50ms 間隔）にしか走らないので、
+            // 毎回スナップショットを確保しても問題にならない
+            var scratch = new List<EditState>();
+            context.Observe(
+                LiveEdits.SyncedVersion,
+                _ =>
+                {
+                    scratch.Clear();
+                    foreach (var component in components)
+                    {
+                        EditState.AppendFrom(component, targets, scratch, true);
+                    }
+
+                    return EditSnapshot.From(scratch);
+                },
+                EditSnapshot.AreEqual);
         }
 
         /// <summary>
@@ -171,13 +204,53 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// （プロキシの再生成 + 全フィルタの再実行 + メッシュの複製）、高頂点数のアバターでは
         /// Undo 連打がそのままフリーズになる。
         /// セッションの開始・終了は ActiveComponent の変化として拾うので、終了時に通常の監視へ戻る。
+        ///
+        /// 監視するのは <paramref name="targets"/> を対象にする編集だけ。1 つのコンポーネントが
+        /// 多数の Renderer を対象にしていても、ある Renderer の編集の変化で他の Renderer の
+        /// ノードは無効化されない。対象集合そのものの変化は <see cref="ObserveShape"/> が拾う。
+        ///
+        /// 自分のノードのメッシュ更新は <see cref="EditState"/> の比較が保証するので、この監視が
+        /// 必須になるのは下流ノードを作り直させる場合（下流フィルタに上書きされる構成での
+        /// セッション外の Undo や Prefab の Revert など）。そのため比較はハッシュではなく完全一致で行う。
         /// </summary>
-        private static void ObserveEdits(ComputeContext context, DenMeshEditor component)
+        private static void ObserveEdits(ComputeContext context, DenMeshEditor component, HashSet<Renderer> targets)
         {
             var editing = context.Observe(EditSession.ActiveComponent, c => c, (a, b) => a == b);
             if (ReferenceEquals(component, editing)) return;
 
-            context.Observe(component, EditsFingerprint, (a, b) => a == b);
+            var tracker = new EditsTracker(targets);
+            context.Observe(component, tracker.Extract, EditSnapshot.AreEqual);
+        }
+
+        /// <summary>
+        /// 1 つの監視登録ぶんの抽出状態。
+        ///
+        /// NDMF は抽出関数を毎フレーム呼ぶ（PropertyMonitor.CheckAllObjectsLoop）。
+        /// 内容が前回と同じなら前回のスナップショットをそのまま返し、確保を避ける。
+        /// 抽出は O(コンポーネントの edits 件数) で、デルタの中身は走査しない
+        /// （<see cref="MeshEdit.Revision"/> などを見るだけ）。
+        /// </summary>
+        private sealed class EditsTracker
+        {
+            private readonly HashSet<Renderer> _targets;
+            private readonly List<EditState> _scratch = new List<EditState>();
+            private EditSnapshot _last;
+
+            internal EditsTracker(HashSet<Renderer> targets)
+            {
+                _targets = targets;
+            }
+
+            internal EditSnapshot Extract(DenMeshEditor component)
+            {
+                _scratch.Clear();
+                EditState.AppendFrom(component, _targets, _scratch, false);
+
+                if (_last != null && _last.Matches(_scratch)) return _last;
+
+                _last = EditSnapshot.From(_scratch);
+                return _last;
+            }
         }
 
         private static int ShapeFingerprint(DenMeshEditor component)
@@ -209,41 +282,6 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
                     hash = hash * 31 + (edit.target != null ? edit.target.GetInstanceID() : 0);
                     if (includeHasEdits) hash = hash * 31 + (edit.HasEdits ? 1 : 0);
-                }
-
-                return hash;
-            }
-        }
-
-        /// <summary>
-        /// 編集内容のフィンガープリント。
-        ///
-        /// NDMF はこの関数を毎フレーム呼ぶ（PropertyMonitor.CheckAllObjectsLoop）。
-        /// デルタ全体を走査すると編集頂点数に比例したコストが常時かかるため、
-        /// <see cref="MeshEdit.Revision"/> を見るだけの O(編集対象数) に抑える。
-        /// vertexCount と Count も混ぜているのは、revision を通らない外部書き換えに対する安全網。
-        /// </summary>
-        private static int EditsFingerprint(DenMeshEditor component)
-        {
-            if (component == null) return 0;
-
-            unchecked
-            {
-                var hash = 17;
-                hash = hash * 31 + component.edits.Count;
-
-                foreach (var edit in component.edits)
-                {
-                    if (edit == null)
-                    {
-                        hash = hash * 31 + 1;
-                        continue;
-                    }
-
-                    hash = hash * 31 + (edit.target != null ? edit.target.GetInstanceID() : 0);
-                    hash = hash * 31 + edit.vertexCount;
-                    hash = hash * 31 + edit.Count;
-                    hash = hash * 31 + edit.Revision;
                 }
 
                 return hash;
