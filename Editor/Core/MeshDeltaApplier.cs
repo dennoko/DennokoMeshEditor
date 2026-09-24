@@ -109,51 +109,93 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// 基準頂点のコピーは取らない。<paramref name="baseVertices"/> に直接デルタを書き込み、
         /// アップロード後に書き込んだ頂点だけを元へ戻す。デルタは疎なので復元は O(編集頂点数) で済み、
         /// 全頂点分の作業バッファ（Renderer あたり 頂点数 × 12 バイト）も不要になる。
-        ///
-        /// 「デルタを引き算して戻す」ではなく「元の値を退避して書き戻す」形にしているのは、
-        /// float の加減算が可逆でないため。誤差が毎フレーム蓄積するのを避ける。
+        /// 戻し方の詳細は <see cref="VertexRestoreBuffer"/>。
         /// </summary>
         /// <param name="sourceBounds">上流メッシュのバウンズ。これを膨らませて使う。</param>
-        /// <param name="restoreScratch">復元用の退避領域。呼び出し側で使い回す。</param>
+        /// <param name="restore">復元用の退避領域。呼び出し側で使い回す。</param>
         internal static void UpdateVertices(Mesh mesh, List<Vector3> baseVertices, MeshEdit edit,
-            Bounds sourceBounds, List<Vector3> restoreScratch)
+            Bounds sourceBounds, VertexRestoreBuffer restore)
         {
-            if (mesh == null || baseVertices == null || edit == null || restoreScratch == null) return;
+            if (mesh == null || baseVertices == null || edit == null || restore == null) return;
 
-            restoreScratch.Clear();
+            restore.Begin();
 
             var count = edit.Count;
             var vertexCount = baseVertices.Count;
             var maxDeltaSq = 0f;
 
-            for (var i = 0; i < count; i++)
+            try
             {
-                var index = edit.GetIndex(i);
-                if (index < 0 || index >= vertexCount) continue;
+                for (var i = 0; i < count; i++)
+                {
+                    var index = edit.GetIndex(i);
+                    if (index < 0 || index >= vertexCount) continue;
 
-                var delta = edit.GetDelta(i);
-                var sq = delta.sqrMagnitude;
-                if (sq > maxDeltaSq) maxDeltaSq = sq;
+                    var delta = edit.GetDelta(i);
+                    var sq = delta.sqrMagnitude;
+                    if (sq > maxDeltaSq) maxDeltaSq = sq;
 
-                restoreScratch.Add(baseVertices[index]);
-                baseVertices[index] += delta;
+                    restore.Add(baseVertices, index, delta);
+                }
+
+                mesh.SetVertices(baseVertices);
+            }
+            finally
+            {
+                // 基準頂点は上流の読み取り結果そのもの（共有されうる）なので、
+                // 途中で例外が出ても書き込んだ分を必ず戻す
+                restore.RestoreTo(baseVertices);
             }
 
-            mesh.SetVertices(baseVertices);
+            ApplyBounds(mesh, sourceBounds, maxDeltaSq);
+        }
 
-            // 逆順に戻す。インデックスが重複していても正しく復元できる
-            var restoreAt = restoreScratch.Count - 1;
-            for (var i = count - 1; i >= 0; i--)
+        /// <summary>
+        /// <see cref="UpdateVertices(Mesh, List{Vector3}, MeshEdit, Bounds, VertexRestoreBuffer)"/> の
+        /// 辞書版。複数の編集を合成した結果や、編集セッション中の未確定データを適用するときに使う。
+        /// 辞書は列挙するだけで、確保は発生しない。
+        /// </summary>
+        internal static void UpdateVertices(Mesh mesh, List<Vector3> baseVertices, Dictionary<int, Vector3> deltas,
+            Bounds sourceBounds, VertexRestoreBuffer restore)
+        {
+            if (mesh == null || baseVertices == null || deltas == null || restore == null) return;
+
+            restore.Begin();
+
+            var vertexCount = baseVertices.Count;
+            var maxDeltaSq = 0f;
+
+            try
             {
-                var index = edit.GetIndex(i);
-                if (index < 0 || index >= vertexCount) continue;
+                foreach (var pair in deltas)
+                {
+                    var index = pair.Key;
+                    if (index < 0 || index >= vertexCount) continue;
 
-                baseVertices[index] = restoreScratch[restoreAt--];
+                    var delta = pair.Value;
+                    var sq = delta.sqrMagnitude;
+                    if (sq > maxDeltaSq) maxDeltaSq = sq;
+
+                    restore.Add(baseVertices, index, delta);
+                }
+
+                mesh.SetVertices(baseVertices);
+            }
+            finally
+            {
+                restore.RestoreTo(baseVertices);
             }
 
-            // 法線・接線は再計算しない。
-            // バウンズも全頂点走査（RecalculateBounds）はせず、上流のバウンズを
-            // 最大デルタ長ぶん膨らませる。保守的に大きくなるだけなのでカリング上は安全。
+            ApplyBounds(mesh, sourceBounds, maxDeltaSq);
+        }
+
+        /// <summary>
+        /// 法線・接線は再計算しない。
+        /// バウンズも全頂点走査（RecalculateBounds）はせず、上流のバウンズを
+        /// 最大デルタ長ぶん膨らませる。保守的に大きくなるだけなのでカリング上は安全。
+        /// </summary>
+        private static void ApplyBounds(Mesh mesh, Bounds sourceBounds, float maxDeltaSq)
+        {
             var margin = Mathf.Sqrt(maxDeltaSq);
             sourceBounds.Expand(margin * 2f);
             mesh.bounds = sourceBounds;
@@ -182,6 +224,47 @@ namespace Dennokoworks.DenMeshEditor.Editor
             mesh.AddBlendShapeFrame(shapeName, 100f, deltaVertices, null, null);
 
             return mesh;
+        }
+    }
+
+    /// <summary>
+    /// <see cref="MeshDeltaApplier.UpdateVertices(Mesh, List{Vector3}, MeshEdit, Bounds, VertexRestoreBuffer)"/> が
+    /// 基準頂点へ一時的に書き込んだ値を元へ戻すための退避領域。
+    ///
+    /// 「デルタを引き算して戻す」ではなく「元の値を退避して書き戻す」形にしているのは、
+    /// float の加減算が可逆でないため。誤差が毎フレーム蓄積するのを避ける。
+    /// 書き込む前にインデックスと元の値を記録するので、途中で例外が出ても記録した分だけを
+    /// 正しく戻せる。逆順に戻すので、インデックスが重複していても元の値に戻る。
+    /// </summary>
+    internal sealed class VertexRestoreBuffer
+    {
+        private readonly List<int> _indices = new List<int>();
+        private readonly List<Vector3> _values = new List<Vector3>();
+
+        internal void Begin()
+        {
+            _indices.Clear();
+            _values.Clear();
+        }
+
+        /// <summary>元の値を退避してから、デルタを加算する。</summary>
+        internal void Add(List<Vector3> vertices, int index, Vector3 delta)
+        {
+            var original = vertices[index];
+            _indices.Add(index);
+            _values.Add(original);
+            vertices[index] = original + delta;
+        }
+
+        internal void RestoreTo(List<Vector3> vertices)
+        {
+            for (var i = _indices.Count - 1; i >= 0; i--)
+            {
+                vertices[_indices[i]] = _values[i];
+            }
+
+            _indices.Clear();
+            _values.Clear();
         }
     }
 

@@ -45,7 +45,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
             public Mesh Generated;
 
             /// <summary>デルタ適用時に上書きした頂点の退避領域。編集頂点数ぶんしか使わない。</summary>
-            public readonly List<Vector3> Restore = new List<Vector3>();
+            public readonly VertexRestoreBuffer Restore = new VertexRestoreBuffer();
+
+            /// <summary>複数の編集や未確定データを合成するときの作業領域。使い回して確保を避ける。</summary>
+            public readonly Dictionary<int, Vector3> Merged = new Dictionary<int, Vector3>();
 
             /// <summary>現在の編集状態。毎フレーム集め直す（List は使い回す）。</summary>
             public List<EditState> Current = new List<EditState>();
@@ -87,6 +90,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
         {
             _components = components;
             PreviewStats.CountNodeCreated();
+#if DEN_MESH_EDITOR_DEBUG
+            AliveNodes.Add(this);
+#endif
 
             foreach (var (original, proxy) in proxyPairs)
             {
@@ -305,14 +311,15 @@ namespace Dennokoworks.DenMeshEditor.Editor
             using var marker = PreviewMarkers.Rebuild.Auto();
             PreviewStats.CountRebuild();
 
-            MeshEdit edit;
+            DenMeshEditorPreviewFilter.GatherResult kind;
+            MeshEdit single;
             using (PreviewMarkers.GatherEdits.Auto())
             {
-                edit = DenMeshEditorPreviewFilter.GatherEdits(
-                    _components, entry.Original, entry.UpstreamVertices.Count);
+                kind = DenMeshEditorPreviewFilter.GatherEditsInto(
+                    _components, entry.Original, entry.UpstreamVertices.Count, entry.Merged, true, out single);
             }
 
-            if (edit == null)
+            if (kind == DenMeshEditorPreviewFilter.GatherResult.Empty)
             {
                 DestroyGenerated(entry);
                 return true;
@@ -341,8 +348,16 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             try
             {
-                MeshDeltaApplier.UpdateVertices(
-                    entry.Generated, entry.UpstreamVertices, edit, entry.Source.bounds, entry.Restore);
+                if (kind == DenMeshEditorPreviewFilter.GatherResult.Single)
+                {
+                    MeshDeltaApplier.UpdateVertices(
+                        entry.Generated, entry.UpstreamVertices, single, entry.Source.bounds, entry.Restore);
+                }
+                else
+                {
+                    MeshDeltaApplier.UpdateVertices(
+                        entry.Generated, entry.UpstreamVertices, entry.Merged, entry.Source.bounds, entry.Restore);
+                }
             }
             catch
             {
@@ -431,6 +446,95 @@ namespace Dennokoworks.DenMeshEditor.Editor
             }
 
             _entries.Clear();
+#if DEN_MESH_EDITOR_DEBUG
+            AliveNodes.Remove(this);
+#endif
         }
+
+#if DEN_MESH_EDITOR_DEBUG
+        private static readonly HashSet<DenMeshEditorPreviewNode> AliveNodes = new HashSet<DenMeshEditorPreviewNode>();
+
+        /// <summary>
+        /// プレビューの生成メッシュと、ビルドと同じ経路（<see cref="DenMeshEditorPreviewFilter.GatherEdits"/> +
+        /// <see cref="MeshDeltaApplier.CreateEdited"/>）で作ったメッシュの頂点が一致するかを調べる。
+        ///
+        /// 基準が違って比較できないもの（上流フィルタがメッシュを差し替えている、未確定データがある、
+        /// まだ反映が終わっていない）は数えるだけで比較しない。
+        /// </summary>
+        [MenuItem("Tools/dennokoworks/Dennoko Mesh Editor/Debug/Compare Preview With Build Result")]
+        private static void CompareWithBuildResult()
+        {
+            var compared = 0;
+            var mismatched = 0;
+            var skipped = 0;
+            var states = new List<EditState>();
+
+            foreach (var node in AliveNodes)
+            {
+                foreach (var entry in node._entries.Values)
+                {
+                    if (entry.Original == null || entry.Source == null
+                        || entry.Source != MeshDeltaApplier.GetSharedMesh(entry.Original))
+                    {
+                        skipped++;
+                        continue;
+                    }
+
+                    EditState.Collect(node._components, entry.Original, states, true);
+
+                    var pending = !entry.HasApplied || !EditState.SequenceEqual(entry.Applied, states);
+                    var hasLive = false;
+                    foreach (var state in states)
+                    {
+                        if (state.LiveStamp != 0) hasLive = true;
+                    }
+
+                    if (pending || hasLive)
+                    {
+                        skipped++;
+                        continue;
+                    }
+
+                    var edit = DenMeshEditorPreviewFilter.GatherEdits(
+                        node._components, entry.Original, entry.Source.vertexCount);
+                    var expected = edit != null ? MeshDeltaApplier.CreateEdited(entry.Source, edit) : null;
+
+                    try
+                    {
+                        compared++;
+                        if (SameVertices(expected, entry.Generated)) continue;
+
+                        mismatched++;
+                        Debug.LogWarning(
+                            $"[Dennoko Mesh Editor] {entry.Original.name}: プレビューとビルド結果の頂点が一致しません。",
+                            entry.Original);
+                    }
+                    finally
+                    {
+                        if (expected != null) Object.DestroyImmediate(expected);
+                    }
+                }
+            }
+
+            Debug.Log(
+                $"[Dennoko Mesh Editor] プレビューとビルド結果の比較 — 比較 {compared} / 不一致 {mismatched} / 対象外 {skipped}");
+        }
+
+        private static bool SameVertices(Mesh expected, Mesh actual)
+        {
+            if (expected == null || actual == null) return expected == actual;
+
+            var a = expected.vertices;
+            var b = actual.vertices;
+            if (a.Length != b.Length) return false;
+
+            for (var i = 0; i < a.Length; i++)
+            {
+                if (!a[i].x.Equals(b[i].x) || !a[i].y.Equals(b[i].y) || !a[i].z.Equals(b[i].z)) return false;
+            }
+
+            return true;
+        }
+#endif
     }
 }

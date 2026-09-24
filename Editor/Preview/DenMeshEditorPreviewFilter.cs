@@ -289,76 +289,160 @@ namespace Dennokoworks.DenMeshEditor.Editor
         }
 
         /// <summary>
-        /// 対象 Renderer に紐づく編集データを、全コンポーネント分まとめて 1 つに合成する。
-        /// 同一 Renderer を複数のコンポーネントが対象にしている場合はデルタを加算する。
-        ///
-        /// 編集セッション中の未確定データ（<see cref="LiveEdits"/>）があれば、
-        /// そのコンポーネントの寄与だけを未確定データで置き換える。
+        /// 対象 Renderer に紐づく編集データを、全コンポーネント分まとめて 1 つに合成する（ビルド用）。
+        /// 合成の規則は <see cref="GatherEditsInto"/> にある。
         /// </summary>
         /// <param name="skipped">
-        /// 頂点数の不一致などで適用できなかった編集の説明を受け取る。
-        /// null を渡すと収集しない（プレビューのように毎フレーム呼ばれる経路用）。
+        /// 頂点数の不一致などで適用できなかった編集の説明を受け取る。null を渡すと収集しない。
         /// </param>
-        internal static MeshEdit GatherEdits(IEnumerable<DenMeshEditor> components, Renderer target, int vertexCount,
+        internal static MeshEdit GatherEdits(IReadOnlyList<DenMeshEditor> components, Renderer target, int vertexCount,
             List<string> skipped = null)
         {
-            Dictionary<int, Vector3> merged = null;
+            var merged = new Dictionary<int, Vector3>();
+            var kind = GatherEditsInto(components, target, vertexCount, merged, false, out _, skipped);
+            if (kind == GatherResult.Empty) return null;
 
-            foreach (var component in components)
+            var result = new MeshEdit { target = target };
+            result.SetFrom(merged, vertexCount);
+            return result.HasEdits ? result : null;
+        }
+
+        /// <summary><see cref="GatherEditsInto"/> の結果の形。</summary>
+        internal enum GatherResult
+        {
+            /// <summary>適用すべきデルタが無い。</summary>
+            Empty,
+
+            /// <summary>寄与する編集が確定済みの 1 件だけで、合成せずにそのまま使える。</summary>
+            Single,
+
+            /// <summary>合成結果を辞書へ書き出した。</summary>
+            Merged,
+        }
+
+        /// <summary>
+        /// 対象 Renderer に紐づく編集データを、全コンポーネント分まとめて合成する。
+        /// プレビューとビルドの両方がここを通るので、合成の規則はここにだけ書く。
+        ///
+        ///   - 同一 Renderer を複数のコンポーネントが対象にしている場合はデルタを加算する
+        ///   - 頂点数が編集時と違う編集は適用しない（元メッシュ差し替え・再インポート等）
+        ///   - 編集セッション中の未確定データ（<see cref="LiveEdits"/>）があれば、
+        ///     その編集の寄与だけを未確定データで置き換える
+        ///   - 長さ 0 のデルタは適用しない
+        ///
+        /// 確保はしない（<paramref name="destination"/> は呼び出し側で使い回す）。
+        /// </summary>
+        /// <param name="allowSingle">
+        /// true のとき、寄与する編集が確定済みの 1 件だけなら合成を省いて
+        /// <see cref="GatherResult.Single"/> と <paramref name="single"/> を返す。
+        /// 1 件だけなら合成しても同じ値になるので、結果は変わらない。
+        /// </param>
+        /// <param name="skipped">
+        /// 頂点数の不一致などで適用できなかった編集の説明を受け取る。
+        /// null を渡すと収集しない（プレビューのように頻繁に呼ばれる経路用）。
+        /// </param>
+        internal static GatherResult GatherEditsInto(IReadOnlyList<DenMeshEditor> components, Renderer target,
+            int vertexCount, Dictionary<int, Vector3> destination, bool allowSingle, out MeshEdit single,
+            List<string> skipped = null)
+        {
+            destination.Clear();
+            single = null;
+
+            // 1 巡目：寄与する編集を数える（スキップの報告もここでだけ行う）
+            MeshEdit sole = null;
+            var contributions = 0;
+            var anyLive = false;
+
+            for (var c = 0; c < components.Count; c++)
             {
+                var component = components[c];
                 if (component == null) continue;
 
                 foreach (var edit in component.edits)
                 {
-                    if (edit == null || edit.target != target) continue;
+                    if (!IsApplicable(edit, target, vertexCount, skipped)) continue;
 
-                    // 頂点数が編集時と違う場合は適用しない（元メッシュ差し替え・再インポート等）。
-                    // 黙って捨てるとユーザーが気づけないので、呼び出し側へ理由を返す。
-                    if (edit.vertexCount != 0 && edit.vertexCount != vertexCount)
+                    if (LiveEdits.TryGet(edit, out _))
                     {
-                        if (edit.HasEdits)
-                        {
-                            skipped?.Add(
-                                $"頂点数が編集時と異なるため {edit.Count} 頂点分の編集を適用できませんでした"
-                                + $"（現在 {vertexCount} / 編集時 {edit.vertexCount}）。"
-                                + "元メッシュが差し替わったか、再インポートで頂点順が変化した可能性があります。");
-                        }
-
+                        anyLive = true;
+                        contributions++;
                         continue;
                     }
 
+                    if (edit.Count == 0) continue;
+
+                    contributions++;
+                    sole = edit;
+                }
+            }
+
+            if (contributions == 0) return GatherResult.Empty;
+
+            if (allowSingle && contributions == 1 && !anyLive)
+            {
+                single = sole;
+                return GatherResult.Single;
+            }
+
+            // 2 巡目：合成する
+            for (var c = 0; c < components.Count; c++)
+            {
+                var component = components[c];
+                if (component == null) continue;
+
+                foreach (var edit in component.edits)
+                {
+                    if (!IsApplicable(edit, target, vertexCount, null)) continue;
+
                     if (LiveEdits.TryGet(edit, out var live))
                     {
-                        merged ??= new Dictionary<int, Vector3>(live.Count);
                         foreach (var pair in live)
                         {
                             if (pair.Value.sqrMagnitude <= 0f) continue;
-                            merged.TryGetValue(pair.Key, out var accumulated);
-                            merged[pair.Key] = accumulated + pair.Value;
+                            destination.TryGetValue(pair.Key, out var accumulated);
+                            destination[pair.Key] = accumulated + pair.Value;
                         }
 
                         continue;
                     }
 
                     var count = edit.Count;
-                    if (count == 0) continue;
-
-                    merged ??= new Dictionary<int, Vector3>(count);
-
                     for (var i = 0; i < count; i++)
                     {
                         var index = edit.GetIndex(i);
-                        merged.TryGetValue(index, out var accumulated);
-                        merged[index] = accumulated + edit.GetDelta(i);
+                        destination.TryGetValue(index, out var accumulated);
+                        destination[index] = accumulated + edit.GetDelta(i);
                     }
                 }
             }
 
-            if (merged == null || merged.Count == 0) return null;
+            // 打ち消し合ってすべて 0 になった場合は、ビルド側（SetFrom が 0 を捨てる）と同じく空とみなす
+            foreach (var pair in destination)
+            {
+                if (pair.Value.sqrMagnitude > 0f) return GatherResult.Merged;
+            }
 
-            var result = new MeshEdit { target = target };
-            result.SetFrom(merged, vertexCount);
-            return result.HasEdits ? result : null;
+            return GatherResult.Empty;
+        }
+
+        /// <summary>
+        /// 編集が対象 Renderer に適用できるか。頂点数が編集時と違う場合は適用しない。
+        /// 黙って捨てるとユーザーが気づけないので、<paramref name="skipped"/> へ理由を返す。
+        /// </summary>
+        private static bool IsApplicable(MeshEdit edit, Renderer target, int vertexCount, List<string> skipped)
+        {
+            if (edit == null || edit.target != target) return false;
+            if (edit.vertexCount == 0 || edit.vertexCount == vertexCount) return true;
+
+            if (edit.HasEdits)
+            {
+                skipped?.Add(
+                    $"頂点数が編集時と異なるため {edit.Count} 頂点分の編集を適用できませんでした"
+                    + $"（現在 {vertexCount} / 編集時 {edit.vertexCount}）。"
+                    + "元メッシュが差し替わったか、再インポートで頂点順が変化した可能性があります。");
+            }
+
+            return false;
         }
     }
 }

@@ -71,7 +71,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// <summary>
         /// <paramref name="target"/> に寄与する編集の比較値を <paramref name="destination"/> へ集める。
         ///
-        /// 収集の順序と対象の絞り込みは <see cref="DenMeshEditorPreviewFilter.GatherEdits"/> と
+        /// 収集の順序と対象の絞り込みは <see cref="DenMeshEditorPreviewFilter.GatherEditsInto"/> と
         /// 同じにする（コンポーネントの順 → 各コンポーネントの edits の順、target の比較は
         /// Unity の <c>!=</c>）。ここで拾う集合が合成側と食い違うと、変化を見落としうる。
         /// </summary>
