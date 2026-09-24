@@ -68,6 +68,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
         internal DenMeshEditorPreviewNode(IEnumerable<(Renderer, Renderer)> proxyPairs, List<DenMeshEditor> components)
         {
             _components = components;
+            PreviewStats.CountNodeCreated();
 
             foreach (var (original, proxy) in proxyPairs)
             {
@@ -94,6 +95,14 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// ここでプロキシを登録することで、シーンビュー編集ツールも最新のプロキシを参照できる。
         /// </summary>
         public void OnFrame(Renderer original, Renderer proxy)
+        {
+            using (PreviewMarkers.OnFrame.Auto())
+            {
+                OnFrameCore(original, proxy);
+            }
+        }
+
+        private void OnFrameCore(Renderer original, Renderer proxy)
         {
             ProxyRegistry.Report(original, proxy);
 
@@ -128,7 +137,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
             {
                 entry.NextProbe = now + UpstreamProbeInterval * (0.75 + 0.5 * entry.Phase);
 
-                if (ReadUpstream(entry, original) && UpdateFingerprint(entry)) rebuild = true;
+                using (PreviewMarkers.ProbeUpstream.Auto())
+                {
+                    if (ReadUpstream(entry, original) && UpdateFingerprint(entry)) rebuild = true;
+                }
             }
 
             if (rebuild && entry.UpstreamVertices.Count > 0)
@@ -154,6 +166,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             // インスタンスが変わらないため、読み直して変化を検出する。
             // GetVertices は List を使い回すので、容量が足りていれば確保は発生しない。
             entry.Source.GetVertices(entry.UpstreamVertices);
+            PreviewStats.CountFullRead();
 
             // 頂点を持つはずなのに読めなかった場合は Read/Write が無効な可能性が高い。
             // 事前に isReadable で弾くとエディタ上で読めているケースまで止めてしまうので、
@@ -218,8 +231,15 @@ namespace Dennokoworks.DenMeshEditor.Editor
         {
             if (entry.Source == null || entry.UpstreamVertices.Count == 0) return;
 
-            var edit = DenMeshEditorPreviewFilter.GatherEdits(
-                _components, entry.Original, entry.UpstreamVertices.Count);
+            using var marker = PreviewMarkers.Rebuild.Auto();
+            PreviewStats.CountRebuild();
+
+            MeshEdit edit;
+            using (PreviewMarkers.GatherEdits.Auto())
+            {
+                edit = DenMeshEditorPreviewFilter.GatherEdits(
+                    _components, entry.Original, entry.UpstreamVertices.Count);
+            }
 
             if (edit == null)
             {
@@ -230,7 +250,12 @@ namespace Dennokoworks.DenMeshEditor.Editor
             if (entry.Generated == null)
             {
                 // IRenderFilter の規約：メッシュは新規インスタンスを作り、Dispose で破棄する
-                entry.Generated = Object.Instantiate(entry.Source);
+                using (PreviewMarkers.Instantiate.Auto())
+                {
+                    entry.Generated = Object.Instantiate(entry.Source);
+                }
+
+                PreviewStats.CountGeneratedCreated();
                 entry.Generated.name = entry.Source.name + " (Dennoko Mesh Editor)";
                 entry.Generated.hideFlags = HideFlags.HideAndDontSave;
 
@@ -251,6 +276,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             GeneratedMeshTracker.Forget(entry.Generated);
             Object.DestroyImmediate(entry.Generated);
+            PreviewStats.CountGeneratedDestroyed();
             entry.Generated = null;
         }
 
@@ -272,25 +298,36 @@ namespace Dennokoworks.DenMeshEditor.Editor
             ComputeContext context,
             RenderAspects updatedAspects)
         {
+            var reused = TryReuse(proxyPairs, context, updatedAspects);
+            PreviewStats.CountNodeRefresh(reused);
+
+            return Task.FromResult<IRenderFilterNode>(reused ? this : null);
+        }
+
+        private bool TryReuse(
+            IEnumerable<(Renderer, Renderer)> proxyPairs,
+            ComputeContext context,
+            RenderAspects updatedAspects)
+        {
             // 上流のメッシュが差し替わった場合は、基準頂点から取り直した方が確実
-            if ((updatedAspects & RenderAspects.Mesh) != 0) return Task.FromResult<IRenderFilterNode>(null);
+            if ((updatedAspects & RenderAspects.Mesh) != 0) return false;
 
             var matched = 0;
             foreach (var (original, proxy) in proxyPairs)
             {
                 if (original == null) continue;
-                if (!_entries.TryGetValue(original, out var entry)) return Task.FromResult<IRenderFilterNode>(null);
-                if (entry.Proxy != proxy) return Task.FromResult<IRenderFilterNode>(null);
+                if (!_entries.TryGetValue(original, out var entry)) return false;
+                if (entry.Proxy != proxy) return false;
 
                 matched++;
             }
 
-            if (matched != _entries.Count) return Task.FromResult<IRenderFilterNode>(null);
+            if (matched != _entries.Count) return false;
 
             // Instantiate を通らないので、監視は新しい ComputeContext へ張り直す
             DenMeshEditorPreviewFilter.ObserveNodeInputs(context, _components, _entries.Keys);
 
-            return Task.FromResult<IRenderFilterNode>(this);
+            return true;
         }
 
         public void Dispose()
