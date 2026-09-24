@@ -234,37 +234,47 @@ namespace Dennokoworks.DenMeshEditor.Editor
     /// 「デルタを引き算して戻す」ではなく「元の値を退避して書き戻す」形にしているのは、
     /// float の加減算が可逆でないため。誤差が毎フレーム蓄積するのを避ける。
     /// 書き込む前にインデックスと元の値を記録するので、途中で例外が出ても記録した分だけを
-    /// 正しく戻せる。逆順に戻すので、インデックスが重複していても元の値に戻る。
+    /// 正しく戻せる。1 件ずつ単一リストに記録し、退避情報のずれを防ぐ。
+    /// 逆順に戻すので、インデックスが重複していても元の値に戻る。
     /// </summary>
     internal sealed class VertexRestoreBuffer
     {
-        private readonly List<int> _indices = new List<int>();
-        private readonly List<Vector3> _values = new List<Vector3>();
+        private readonly struct RestoredVertex
+        {
+            public readonly int Index;
+            public readonly Vector3 Value;
+
+            public RestoredVertex(int index, Vector3 value)
+            {
+                Index = index;
+                Value = value;
+            }
+        }
+
+        private readonly List<RestoredVertex> _entries = new List<RestoredVertex>();
 
         internal void Begin()
         {
-            _indices.Clear();
-            _values.Clear();
+            _entries.Clear();
         }
 
         /// <summary>元の値を退避してから、デルタを加算する。</summary>
         internal void Add(List<Vector3> vertices, int index, Vector3 delta)
         {
             var original = vertices[index];
-            _indices.Add(index);
-            _values.Add(original);
+            _entries.Add(new RestoredVertex(index, original));
             vertices[index] = original + delta;
         }
 
         internal void RestoreTo(List<Vector3> vertices)
         {
-            for (var i = _indices.Count - 1; i >= 0; i--)
+            for (var i = _entries.Count - 1; i >= 0; i--)
             {
-                vertices[_indices[i]] = _values[i];
+                var entry = _entries[i];
+                vertices[entry.Index] = entry.Value;
             }
 
-            _indices.Clear();
-            _values.Clear();
+            _entries.Clear();
         }
     }
 

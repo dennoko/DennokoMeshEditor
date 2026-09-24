@@ -45,6 +45,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// </summary>
         internal static UpstreamVertices Acquire(Mesh mesh)
         {
+            if (mesh == null) return null;
+
             if (!Slots.TryGetValue(mesh, out var slot))
             {
                 slot = new Slot { Value = new UpstreamVertices(mesh) };
@@ -62,6 +64,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
         internal static void Release(UpstreamVertices upstream)
         {
             if (upstream == null) return;
+            // Mesh が Unity 側で破棄済みでも、参照キーを使って枠を解放する。
             if (!Slots.TryGetValue(upstream.Mesh, out var slot)) return;
 
             // 同じ Mesh で作り直された別インスタンスを誤って減らさない

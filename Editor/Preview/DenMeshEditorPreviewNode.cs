@@ -105,7 +105,18 @@ namespace Dennokoworks.DenMeshEditor.Editor
             entry.Proxy = proxy;
 
             var upstream = MeshDeltaApplier.GetSharedMesh(proxy);
-            if (upstream == null) return;
+            if (upstream == null)
+            {
+                // メッシュが外されたら前回の生成物と上流の共有枠を手放す。
+                // 前フレームの Expect が残ると、下流による上書きと誤判定される。
+                entry.Source = null;
+                UpstreamVertexCache.Release(entry.Upstream);
+                entry.Upstream = null;
+                entry.HasApplied = false;
+                DestroyGenerated(entry);
+                DownstreamGuard.Forget(this, original);
+                return;
+            }
 
             // 上流ノードの出力インスタンスが差し替わったら作り直す。
             // 自分が書き込んだメッシュが残っている場合（フレーム処理が途中で打ち切られた等）は据え置く。
@@ -201,7 +212,12 @@ namespace Dennokoworks.DenMeshEditor.Editor
             if (entry.Source == null || entry.Upstream == null || !entry.Upstream.HasRead) return false;
 
             var vertices = entry.Upstream.Vertices;
-            if (vertices.Count == 0) return false;
+            if (vertices.Count == 0)
+            {
+                // 正常に読めた空メッシュは適用済みとし、毎フレームの再試行を止める。
+                DestroyGenerated(entry);
+                return true;
+            }
 
             using var marker = PreviewMarkers.Rebuild.Auto();
             PreviewStats.CountRebuild();
