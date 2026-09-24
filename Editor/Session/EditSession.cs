@@ -697,11 +697,13 @@ namespace Dennokoworks.DenMeshEditor.Editor
         }
 
         /// <summary>
-        /// 未確定データを捨て、プレビューへ「読み直せ」と伝える。
+        /// 未確定データを捨て、変更を通知する。
         ///
-        /// 編集セッション中のコンポーネントは NDMF から監視されていない
-        /// （理由は <c>DenMeshEditorPreviewFilter.ObserveEdits</c>）ため、コンポーネントを
-        /// 書き換えただけではプレビューが追従しない。更新の合図はこちらから出す。
+        /// 自分のプレビューノードは Revision と未確定データのスタンプを毎フレーム比べるので、
+        /// 通知が無くても追従する。それでも通知するのは、下流フィルタに上書きされている構成で
+        /// <see cref="LiveEdits.SyncedVersion"/> を進め、NDMF に下流ノードを作り直させるため
+        /// （編集セッション中のコンポーネントは NDMF から監視されていない。理由は
+        /// <c>DenMeshEditorPreviewFilter.ObserveEdits</c>）。
         /// </summary>
         private static void ClearLiveEdits()
         {

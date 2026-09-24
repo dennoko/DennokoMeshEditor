@@ -14,10 +14,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
     /// そのためコンポーネントへの確定はマウスを離したときの 1 回だけにし、
     /// ドラッグ中はここを経由して反映する。Undo もドラッグ 1 回につき 1 エントリになる。
     ///
-    /// さらに、編集セッション中はコンポーネント自体が NDMF の監視対象から外れる
-    /// （<c>DenMeshEditorPreviewFilter.ObserveEdits</c>）。そのため
-    /// <see cref="Version"/> はドラッグ中だけでなく、確定・Undo / Redo・編集クリアを含む
-    /// 「セッション中のあらゆる変更」をプレビューへ伝える唯一の合図になっている。
+    /// プレビューノードは合図を待つのではなく、毎フレーム「編集ごとのスタンプ
+    /// （<see cref="GetStamp"/>）と <see cref="MeshEdit.Revision"/>」を前回反映時の値と比べて
+    /// 更新の要否を決める（<see cref="EditState"/>）。スタンプは編集データ単位なので、
+    /// 1 つの対象をドラッグしても関係のない Renderer は再計算されない。
     /// この経路ではパイプラインは作り直されず、生成済みメッシュの頂点だけが書き換わる。
     /// </summary>
     internal static class LiveEdits
@@ -25,12 +25,21 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private static readonly Dictionary<MeshEdit, Dictionary<int, Vector3>> Map =
             new Dictionary<MeshEdit, Dictionary<int, Vector3>>();
 
-        private static int _version;
+        /// <summary>
+        /// 編集データごとの公開スタンプ。<see cref="Publish"/> のたびに単調増加する値を振る。
+        ///
+        /// 単調増加なので、「公開 → クリア → 再公開」でも過去の値と一致しない。
+        /// 未公開（またはクリア済み）の編集は 0 として扱う。
+        /// </summary>
+        private static readonly Dictionary<MeshEdit, int> Stamps = new Dictionary<MeshEdit, int>();
+
+        private static int _stampCounter;
 
         /// <summary>
-        /// 編集内容の世代番号。プレビューノードはこの値が変わったときだけメッシュを更新する。
+        /// 変更の世代番号。<see cref="SyncedVersion"/> へ流す値としてだけ使う。
+        /// 再計算の要否はプレビューノードが <see cref="GetStamp"/> と Revision で判定する。
         /// </summary>
-        internal static int Version => _version;
+        private static int _version;
 
         /// <summary>
         /// 下流フィルタに上書きされている対象がある場合に、NDMF へ変更を伝えるための値。
@@ -109,7 +118,23 @@ namespace Dennokoworks.DenMeshEditor.Editor
             if (edit == null || deltas == null) return;
 
             Map[edit] = deltas;
+
+            unchecked
+            {
+                // 0 は「未公開」を表すので飛ばす（int を一周した場合に限る）
+                if (++_stampCounter == 0) ++_stampCounter;
+            }
+
+            Stamps[edit] = _stampCounter;
             Invalidate();
+        }
+
+        /// <summary>
+        /// 編集データの未確定データのスタンプ。未公開なら 0。
+        /// </summary>
+        internal static int GetStamp(MeshEdit edit)
+        {
+            return edit != null && Stamps.TryGetValue(edit, out var stamp) ? stamp : 0;
         }
 
         internal static bool TryGet(MeshEdit edit, out Dictionary<int, Vector3> deltas)
@@ -131,6 +156,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             if (Map.Count == 0) return false;
 
             Map.Clear();
+            Stamps.Clear();
             Invalidate();
             return true;
         }

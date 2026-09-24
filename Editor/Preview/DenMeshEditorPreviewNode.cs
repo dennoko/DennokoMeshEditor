@@ -1,8 +1,10 @@
+using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using nadena.dev.ndmf.preview;
 using UnityEditor;
 using UnityEngine;
+using Object = UnityEngine.Object;
 
 namespace Dennokoworks.DenMeshEditor.Editor
 {
@@ -17,7 +19,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// 上流が「その場で」メッシュを書き換えるケースを拾うには読み直すしかないが、
         /// <c>Mesh.GetVertices</c> は全頂点のコピーであり、編集済み Renderer の数だけ
         /// 毎フレーム走らせるとシーン全体が重くなる（5 万頂点なら 1 Renderer あたり 600KB/frame）。
-        /// 自分の編集内容の変化は <see cref="LiveEdits.Version"/> で即座に拾えるので、
+        /// 自分の編集内容の変化は <see cref="EditState"/> の比較で即座に拾えるので、
         /// 上流側の検出だけをこの間隔まで落とす。
         /// </summary>
         private const double UpstreamProbeInterval = 0.2;
@@ -45,7 +47,23 @@ namespace Dennokoworks.DenMeshEditor.Editor
             /// <summary>デルタ適用時に上書きした頂点の退避領域。編集頂点数ぶんしか使わない。</summary>
             public readonly List<Vector3> Restore = new List<Vector3>();
 
-            public int Version = int.MinValue;
+            /// <summary>現在の編集状態。毎フレーム集め直す（List は使い回す）。</summary>
+            public List<EditState> Current = new List<EditState>();
+
+            /// <summary>最後にメッシュへ反映できたときの編集状態。</summary>
+            public List<EditState> Applied = new List<EditState>();
+
+            /// <summary><see cref="Applied"/> が有効か。上流が差し替わったら無効に戻す。</summary>
+            public bool HasApplied;
+
+            /// <summary>上流頂点の世代。読み直した内容が変わるたびに進む。</summary>
+            public int UpstreamGeneration;
+
+            /// <summary>最後にメッシュへ反映できたときの <see cref="UpstreamGeneration"/>。</summary>
+            public int AppliedUpstreamGeneration;
+
+            /// <summary>作り直しの失敗を 1 度だけ報告するためのフラグ。成功すると戻す。</summary>
+            public bool LoggedFailure;
 
             /// <summary>次に上流メッシュを読み直す時刻。</summary>
             public double NextProbe;
@@ -118,7 +136,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             {
                 entry.Source = upstream;
                 entry.Fingerprint = null;
-                entry.Version = int.MinValue;
+                entry.HasApplied = false;
                 entry.Probed = false;
                 entry.WarnedNotReadable = false;
                 DestroyGenerated(entry);
@@ -127,11 +145,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
             if (entry.Source == null) return;
 
             var now = EditorApplication.timeSinceStartup;
-            var rebuild = entry.Version != LiveEdits.Version;
 
             // 上流の読み直しは間隔を空けて行う。ここを毎フレームにすると、
             // 編集していない待機中も編集済み Renderer の数だけ全頂点コピーが走り続ける。
-            // 自分の編集内容の変化は LiveEdits.Version で即座に拾えるので、
+            // 自分の編集内容の変化は EditState の比較で即座に拾えるので、
             // 間隔を空けて困るのは「上流がメッシュを in-place で書き換える」ケースだけ。
             if (!entry.Probed || now >= entry.NextProbe)
             {
@@ -139,15 +156,26 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
                 using (PreviewMarkers.ProbeUpstream.Auto())
                 {
-                    if (ReadUpstream(entry, original) && UpdateFingerprint(entry)) rebuild = true;
+                    if (ReadUpstream(entry, original) && UpdateFingerprint(entry))
+                    {
+                        unchecked
+                        {
+                            entry.UpstreamGeneration++;
+                        }
+                    }
                 }
             }
 
-            if (rebuild && entry.UpstreamVertices.Count > 0)
-            {
-                entry.Version = LiveEdits.Version;
-                Rebuild(entry);
-            }
+            // 通知ではなく状態の比較で作り直しを決める。自分に関係する編集の比較値と
+            // 上流の世代が、最後に反映できたときと 1 つでも違えば作り直す。
+            // 複数カメラで同じフレームに何度呼ばれても、2 回目以降は一致するので作り直さない
+            EditState.Collect(_components, original, entry.Current, true);
+
+            var dirty = !entry.HasApplied
+                        || entry.AppliedUpstreamGeneration != entry.UpstreamGeneration
+                        || !EditState.SequenceEqual(entry.Applied, entry.Current);
+
+            if (dirty) TryRebuild(entry, original);
 
             if (entry.Generated != null) MeshDeltaApplier.SetSharedMesh(proxy, entry.Generated);
 
@@ -227,9 +255,52 @@ namespace Dennokoworks.DenMeshEditor.Editor
             return changed;
         }
 
-        private void Rebuild(Entry entry)
+        /// <summary>
+        /// 作り直しを試み、成功したときだけ「反映済み」の状態を進める。
+        ///
+        /// 失敗・未実行のときは反映済みの状態を据え置くので、次のフレームで必ず再試行される。
+        /// 例外はここで止める。NDMF の <c>NodeController.OnFrame</c> は例外を捕まえないため、
+        /// 素通しすると同じフレームの他ノードの処理（<c>ProxyPipeline.OnFrame</c> のループ）まで止まる。
+        /// </summary>
+        private void TryRebuild(Entry entry, Renderer original)
         {
-            if (entry.Source == null || entry.UpstreamVertices.Count == 0) return;
+            bool applied;
+            try
+            {
+                applied = Rebuild(entry);
+            }
+            catch (Exception e)
+            {
+                // 失敗は毎フレーム再試行されるので、報告は成功するまでの間 1 度だけにする
+                if (!entry.LoggedFailure)
+                {
+                    entry.LoggedFailure = true;
+                    Debug.LogError(
+                        $"[Dennoko Mesh Editor] {original.name} のプレビューを更新できませんでした。\n{e}",
+                        original);
+                }
+
+                return;
+            }
+
+            if (!applied) return;
+
+            entry.LoggedFailure = false;
+            entry.HasApplied = true;
+            entry.AppliedUpstreamGeneration = entry.UpstreamGeneration;
+
+            // 反映した状態を控える。確保しないよう 2 本のリストを入れ替えて使い回す
+            (entry.Applied, entry.Current) = (entry.Current, entry.Applied);
+        }
+
+        /// <summary>
+        /// 現在の上流頂点と編集内容から生成メッシュを作り直す。
+        /// 反映を完了できた（編集が空で生成メッシュを破棄した場合を含む）ときだけ true。
+        /// 上流をまだ読めていない場合は何もせず false を返す。
+        /// </summary>
+        private bool Rebuild(Entry entry)
+        {
+            if (entry.Source == null || entry.UpstreamVertices.Count == 0) return false;
 
             using var marker = PreviewMarkers.Rebuild.Auto();
             PreviewStats.CountRebuild();
@@ -244,9 +315,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
             if (edit == null)
             {
                 DestroyGenerated(entry);
-                return;
+                return true;
             }
 
+            var created = false;
             if (entry.Generated == null)
             {
                 // IRenderFilter の規約：メッシュは新規インスタンスを作り、Dispose で破棄する
@@ -264,10 +336,23 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
                 // ドメインリロードで Dispose が走らないケースに備えて追跡する
                 GeneratedMeshTracker.Track(entry.Generated);
+                created = true;
             }
 
-            MeshDeltaApplier.UpdateVertices(
-                entry.Generated, entry.UpstreamVertices, edit, entry.Source.bounds, entry.Restore);
+            try
+            {
+                MeshDeltaApplier.UpdateVertices(
+                    entry.Generated, entry.UpstreamVertices, edit, entry.Source.bounds, entry.Restore);
+            }
+            catch
+            {
+                // 頂点を書き込めなかった複製は上流の単なるコピーなので、残さず捨てる。
+                // 既存メッシュの更新に失敗した場合は、前回の内容のまま次フレームで再試行する
+                if (created) DestroyGenerated(entry);
+                throw;
+            }
+
+            return true;
         }
 
         private static void DestroyGenerated(Entry entry)
@@ -292,6 +377,12 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// （<see cref="WhatChanged"/> が <c>Mesh</c> を返すので下流は必ず更新される）。
         ///
         /// プロキシの対応が変わっている場合だけは作り直す。共有状態を書き換えずに済ませる。
+        ///
+        /// <b>編集内容の変化はここでは見ない。</b> NDMF はノードを再利用する場合も新しい
+        /// <c>NodeController</c> を作り、そのコンストラクタ内で <see cref="OnFrame"/> を呼ぶ。
+        /// つまり下流ノードの生成より前に <see cref="EditState"/> の比較が必ず走り、
+        /// 内容が変わっていればそこで作り直される（セッション外の Undo や Prefab の Revert でも
+        /// 更新が漏れないのはこの性質による）。
         /// </summary>
         public Task<IRenderFilterNode> Refresh(
             IEnumerable<(Renderer, Renderer)> proxyPairs,

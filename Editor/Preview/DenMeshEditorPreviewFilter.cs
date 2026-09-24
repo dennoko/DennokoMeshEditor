@@ -165,7 +165,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// 再構築される。実際に描画へ効く値だけを抽出して監視する。
         ///
         /// 編集セッション中のコンポーネントはそもそも監視しない。セッション中の変更は
-        /// <see cref="LiveEdits.Version"/> 経由で <see cref="DenMeshEditorPreviewNode.OnFrame"/> が
+        /// <see cref="DenMeshEditorPreviewNode.OnFrame"/> が <see cref="EditState"/> の比較で
         /// 拾い、生成済みメッシュの頂点だけを書き換える。ここで監視すると、ドラッグの確定や
         /// Undo のたびに NDMF がプレビューパイプライン全体を作り直すことになり
         /// （プロキシの再生成 + 全フィルタの再実行 + メッシュの複製）、高頂点数のアバターでは
