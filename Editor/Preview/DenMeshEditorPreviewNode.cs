@@ -10,20 +10,6 @@ namespace Dennokoworks.DenMeshEditor.Editor
 {
     internal class DenMeshEditorPreviewNode : IRenderFilterNode
     {
-        /// <summary>上流メッシュの変化検出に使うサンプル点数。</summary>
-        private const int FingerprintSamples = 64;
-
-        /// <summary>
-        /// 上流メッシュを読み直す間隔（秒）。
-        ///
-        /// 上流が「その場で」メッシュを書き換えるケースを拾うには読み直すしかないが、
-        /// <c>Mesh.GetVertices</c> は全頂点のコピーであり、編集済み Renderer の数だけ
-        /// 毎フレーム走らせるとシーン全体が重くなる（5 万頂点なら 1 Renderer あたり 600KB/frame）。
-        /// 自分の編集内容の変化は <see cref="EditState"/> の比較で即座に拾えるので、
-        /// 上流側の検出だけをこの間隔まで落とす。
-        /// </summary>
-        private const double UpstreamProbeInterval = 0.2;
-
         /// <summary>
         /// プロキシ 1 つ分の状態。
         /// </summary>
@@ -35,11 +21,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
             /// <summary>上流ノードが出力したメッシュ。デルタ加算の基準。</summary>
             public Mesh Source;
 
-            /// <summary>上流メッシュの頂点。毎回読み直すため List を使い回す。</summary>
-            public readonly List<Vector3> UpstreamVertices = new List<Vector3>();
-
-            /// <summary>UpstreamVertices から間引いたサンプル。上流の書き換え検出用。</summary>
-            public Vector3[] Fingerprint;
+            /// <summary><see cref="Source"/> の頂点と、その変化の検出。</summary>
+            public UpstreamVertices Upstream;
 
             /// <summary>自分が生成したメッシュ。編集が無ければ null。</summary>
             public Mesh Generated;
@@ -59,26 +42,11 @@ namespace Dennokoworks.DenMeshEditor.Editor
             /// <summary><see cref="Applied"/> が有効か。上流が差し替わったら無効に戻す。</summary>
             public bool HasApplied;
 
-            /// <summary>上流頂点の世代。読み直した内容が変わるたびに進む。</summary>
-            public int UpstreamGeneration;
-
-            /// <summary>最後にメッシュへ反映できたときの <see cref="UpstreamGeneration"/>。</summary>
+            /// <summary>最後にメッシュへ反映できたときの <see cref="UpstreamVertices.Generation"/>。</summary>
             public int AppliedUpstreamGeneration;
 
             /// <summary>作り直しの失敗を 1 度だけ報告するためのフラグ。成功すると戻す。</summary>
             public bool LoggedFailure;
-
-            /// <summary>次に上流メッシュを読み直す時刻。</summary>
-            public double NextProbe;
-
-            /// <summary>読み直しの位相（0..1）。全 Renderer が同じフレームに集中しないようずらす。</summary>
-            public double Phase;
-
-            /// <summary>一度でも上流を読めたか。初回だけは間隔を待たずに読む。</summary>
-            public bool Probed;
-
-            /// <summary>読み取り不可メッシュの警告を 1 度だけ出すためのフラグ。</summary>
-            public bool WarnedNotReadable;
         }
 
         private readonly Dictionary<Renderer, Entry> _entries = new Dictionary<Renderer, Entry>();
@@ -102,9 +70,6 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 {
                     Original = original,
                     Proxy = proxy,
-
-                    // 全 Renderer の読み直しが同じフレームに集中しないよう位相をずらす
-                    Phase = (original.GetInstanceID() & 0xFF) / 255.0,
                 };
             }
         }
@@ -141,36 +106,16 @@ namespace Dennokoworks.DenMeshEditor.Editor
             if (upstream != entry.Source && upstream != entry.Generated)
             {
                 entry.Source = upstream;
-                entry.Fingerprint = null;
+                entry.Upstream = new UpstreamVertices(upstream);
                 entry.HasApplied = false;
-                entry.Probed = false;
-                entry.WarnedNotReadable = false;
                 DestroyGenerated(entry);
             }
 
             if (entry.Source == null) return;
 
-            var now = EditorApplication.timeSinceStartup;
-
-            // 上流の読み直しは間隔を空けて行う。ここを毎フレームにすると、
-            // 編集していない待機中も編集済み Renderer の数だけ全頂点コピーが走り続ける。
-            // 自分の編集内容の変化は EditState の比較で即座に拾えるので、
-            // 間隔を空けて困るのは「上流がメッシュを in-place で書き換える」ケースだけ。
-            if (!entry.Probed || now >= entry.NextProbe)
-            {
-                entry.NextProbe = now + UpstreamProbeInterval * (0.75 + 0.5 * entry.Phase);
-
-                using (PreviewMarkers.ProbeUpstream.Auto())
-                {
-                    if (ReadUpstream(entry, original) && UpdateFingerprint(entry))
-                    {
-                        unchecked
-                        {
-                            entry.UpstreamGeneration++;
-                        }
-                    }
-                }
-            }
+            // 上流の読み直しは間隔を空けて、なるべく安く行う（詳細は UpstreamVertices）。
+            // 間隔を空けて困るのは「上流がメッシュを in-place で書き換える」ケースだけ
+            entry.Upstream.Probe(EditorApplication.timeSinceStartup, original);
 
             // 通知ではなく状態の比較で作り直しを決める。自分に関係する編集の比較値と
             // 上流の世代が、最後に反映できたときと 1 つでも違えば作り直す。
@@ -178,7 +123,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             EditState.Collect(_components, original, entry.Current, true);
 
             var dirty = !entry.HasApplied
-                        || entry.AppliedUpstreamGeneration != entry.UpstreamGeneration
+                        || entry.AppliedUpstreamGeneration != entry.Upstream.Generation
                         || !EditState.SequenceEqual(entry.Applied, entry.Current);
 
             if (dirty) TryRebuild(entry, original);
@@ -191,75 +136,6 @@ namespace Dennokoworks.DenMeshEditor.Editor
             DownstreamGuard.Expect(this, original, proxy, entry.Generated != null ? entry.Generated : entry.Source);
         }
 
-        /// <summary>
-        /// 上流メッシュの頂点を読み直す。読めなければ false。
-        /// </summary>
-        private static bool ReadUpstream(Entry entry, Renderer original)
-        {
-            // 上流がメッシュを「その場で」書き換えるケース（本ツールの UpdateVertices と同じ方式）では
-            // インスタンスが変わらないため、読み直して変化を検出する。
-            // GetVertices は List を使い回すので、容量が足りていれば確保は発生しない。
-            entry.Source.GetVertices(entry.UpstreamVertices);
-            PreviewStats.CountFullRead();
-
-            // 頂点を持つはずなのに読めなかった場合は Read/Write が無効な可能性が高い。
-            // 事前に isReadable で弾くとエディタ上で読めているケースまで止めてしまうので、
-            // 実際に失敗したときだけ 1 度だけ警告する。
-            if (entry.UpstreamVertices.Count == 0 && entry.Source.vertexCount > 0)
-            {
-                if (!entry.WarnedNotReadable)
-                {
-                    entry.WarnedNotReadable = true;
-                    Debug.LogWarning(
-                        $"[Dennoko Mesh Editor] {original.name} のメッシュ「{entry.Source.name}」から頂点を読み取れませんでした。"
-                        + "インポート設定の Read/Write Enabled を有効にしてください。",
-                        original);
-                }
-
-                // 読めないメッシュを毎フレーム叩き続けないよう、探索済みとして扱う
-                entry.Probed = true;
-                return false;
-            }
-
-            entry.Probed = true;
-            return true;
-        }
-
-        /// <summary>
-        /// 上流頂点から等間隔にサンプルを取り、前回と違っていれば true を返す。
-        /// 全頂点比較はコピーと同コストなので、O(<see cref="FingerprintSamples"/>) で近似する。
-        /// </summary>
-        private static bool UpdateFingerprint(Entry entry)
-        {
-            var vertices = entry.UpstreamVertices;
-            var count = vertices.Count;
-            if (count == 0) return false;
-
-            var samples = Mathf.Min(FingerprintSamples, count);
-
-            if (entry.Fingerprint == null || entry.Fingerprint.Length != samples)
-            {
-                entry.Fingerprint = new Vector3[samples];
-                for (var i = 0; i < samples; i++)
-                {
-                    entry.Fingerprint[i] = vertices[(int)((long)i * count / samples)];
-                }
-
-                return true;
-            }
-
-            var changed = false;
-            for (var i = 0; i < samples; i++)
-            {
-                var value = vertices[(int)((long)i * count / samples)];
-                if (value == entry.Fingerprint[i]) continue;
-
-                entry.Fingerprint[i] = value;
-                changed = true;
-            }
-
-            return changed;
-        }
 
         /// <summary>
         /// 作り直しを試み、成功したときだけ「反映済み」の状態を進める。
@@ -270,6 +146,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// </summary>
         private void TryRebuild(Entry entry, Renderer original)
         {
+            // 反映に使う上流の世代は、作り直しの前に控える
+            var upstreamGeneration = entry.Upstream.Generation;
+
             bool applied;
             try
             {
@@ -293,7 +172,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             entry.LoggedFailure = false;
             entry.HasApplied = true;
-            entry.AppliedUpstreamGeneration = entry.UpstreamGeneration;
+            entry.AppliedUpstreamGeneration = upstreamGeneration;
 
             // 反映した状態を控える。確保しないよう 2 本のリストを入れ替えて使い回す
             (entry.Applied, entry.Current) = (entry.Current, entry.Applied);
@@ -306,7 +185,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// </summary>
         private bool Rebuild(Entry entry)
         {
-            if (entry.Source == null || entry.UpstreamVertices.Count == 0) return false;
+            if (entry.Source == null || entry.Upstream == null || !entry.Upstream.HasRead) return false;
+
+            var vertices = entry.Upstream.Vertices;
+            if (vertices.Count == 0) return false;
 
             using var marker = PreviewMarkers.Rebuild.Auto();
             PreviewStats.CountRebuild();
@@ -316,7 +198,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             using (PreviewMarkers.GatherEdits.Auto())
             {
                 kind = DenMeshEditorPreviewFilter.GatherEditsInto(
-                    _components, entry.Original, entry.UpstreamVertices.Count, entry.Merged, true, out single);
+                    _components, entry.Original, vertices.Count, entry.Merged, true, out single);
             }
 
             if (kind == DenMeshEditorPreviewFilter.GatherResult.Empty)
@@ -351,12 +233,12 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 if (kind == DenMeshEditorPreviewFilter.GatherResult.Single)
                 {
                     MeshDeltaApplier.UpdateVertices(
-                        entry.Generated, entry.UpstreamVertices, single, entry.Source.bounds, entry.Restore);
+                        entry.Generated, vertices, single, entry.Source.bounds, entry.Restore);
                 }
                 else
                 {
                     MeshDeltaApplier.UpdateVertices(
-                        entry.Generated, entry.UpstreamVertices, entry.Merged, entry.Source.bounds, entry.Restore);
+                        entry.Generated, vertices, entry.Merged, entry.Source.bounds, entry.Restore);
                 }
             }
             catch
