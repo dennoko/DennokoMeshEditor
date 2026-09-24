@@ -556,15 +556,32 @@ foreach (var c in components) ObserveEdits(context, c);
 | 監視する場所 | 見る値 | 変化したときに起きること |
 | --- | --- | --- |
 | `GetTargetGroups` | 対象 Renderer の集合 + 編集の有無 | グループ分割のやり直し |
-| `Instantiate`（グループ内のコンポーネントのみ） | `vertexCount` / `Count` / `revision` | **そのグループのノードだけ**が作り直される |
+| `Instantiate`（グループ内のコンポーネントのみ） | **そのノードの Renderer を対象にする編集だけ**の参照 / `revision` / `Count` / `vertexCount`（`EditSnapshot` を完全比較） | **そのグループのノードだけ**が作り直される |
 
-これにより、あるコンポーネントを編集しても、それが触っていない Renderer のノードは NDMF 側で完全再利用され（`NodeController.Refresh` の `changes == 0 && !IsInvalidated` 経路）、メッシュの複製が走らない。
+これにより、あるコンポーネントを編集しても、それが触っていない Renderer のノードは NDMF 側で完全再利用され（`NodeController.Refresh` の `changes == 0 && !IsInvalidated` 経路）、メッシュの複製が走らない。1 つのコンポーネントが多数の Renderer を対象にしていても、ある Renderer の編集で他の Renderer のノードは無効化されない。
 
-#### 9.4.2 上流メッシュの読み直しは間隔を空ける
+#### 9.4.1a 再計算の判定は「通知」ではなく「状態の比較」
 
-`OnFrame` で上流メッシュの in-place 書き換えを検出するには `Mesh.GetVertices` で読み直すしかないが、これは全頂点のコピーである（5 万頂点なら 1 Renderer あたり 600KB/frame）。編集済み Renderer の数だけ毎フレーム走らせると、**編集していない待機中もシーン全体が重くなる。**
+各ノードは `OnFrame` で、自分の Renderer に寄与する `MeshEdit` ごとの比較値（`EditState`：参照・`revision`・`Count`・`vertexCount`・未確定データのスタンプ）と上流頂点の世代を集め、**最後に反映できたときの値と完全比較**して、違うときだけ作り直す。
 
-自分の編集内容の変化は `LiveEdits.Version` で即座に拾えるので、**上流側の検出だけ**を 0.2 秒間隔まで落とす。Renderer ごとに位相をずらし、読み直しが同じフレームに集中しないようにする。
+- 通知の出し忘れがそのまま更新漏れになる構造を避けるため。未確定データのスタンプ（`LiveEdits.GetStamp`）は編集データ単位で単調増加するので、1 つの対象をドラッグしても無関係な Renderer は再計算されない
+- `Refresh` でノードを再利用した場合も、NDMF は新しい `NodeController` のコンストラクタ内で `OnFrame` を呼ぶ。下流ノードの生成より前に比較が走るので、セッション外の Undo / Prefab の Revert でも更新が漏れない
+- 作り直しは成功したときだけ「反映済み」にする。上流を読めていない・例外が出たなどで反映できなかった場合は、次のフレームで再試行する。例外は 1 度だけ報告し、NDMF の `OnFrame` ループへは伝えない（他ノードの処理を止めないため）
+
+#### 9.4.2 上流メッシュの読み直しは安く、間隔を空ける
+
+上流メッシュの in-place 書き換え（本ツールの `UpdateVertices` と同じ方式や、他の拡張によるアセットメッシュの直接書き換え）はインスタンス比較では検出できず、NDMF の `Observe(mesh)` も `ObjectChangeEvents` 経由なので拾えない。読み直す以外に検出方法が無いが、`Mesh.GetVertices` は全頂点のコピーである（5 万頂点なら 1 Renderer あたり 600KB）。
+
+`UpstreamVertices` が次のように読み分ける。
+
+| 周期 | 内容 |
+| --- | --- |
+| 0.2 秒ごと | `Mesh.AcquireReadOnlyMeshData` で位置ストリームを直接参照し、64 点だけを前回と比較（コピーなし） |
+| サンプルが変わったとき・2 秒ごと | 全頂点を別バッファへ読み、保持している頂点と**全件厳密比較**。1 頂点でも違えば入れ替えて世代を進める |
+
+Float32 以外の位置属性・読み取り不可のメッシュ・直接参照時の例外は、毎回の全頂点読み直しに戻す（安全側）。周期はメッシュごとに位相をずらし、読み直しが同じフレームに集中しないようにする。
+
+同じ上流メッシュを参照する Renderer 同士は `UpstreamVertexCache` で `UpstreamVertices` を参照カウント付きで共有するので、頂点の保持と読み直しはユニークな Mesh の数だけで済む。共有した頂点リストへの一時書き込み（`UpdateVertices`）は `VertexRestoreBuffer` が `try/finally` で必ず元に戻す。
 
 #### ドラッグ中の反映：コンポーネントを書き換えない
 
@@ -574,10 +591,10 @@ foreach (var c in components) ObserveEdits(context, c);
 
 | タイミング | 書き込み先 | プレビューの更新契機 |
 | --- | --- | --- |
-| ドラッグ中（毎フレーム） | `LiveEdits`（Editor 内の静的な一時領域） | 世代番号 `LiveEdits.Version` の変化 |
+| ドラッグ中（毎フレーム） | `LiveEdits`（Editor 内の静的な一時領域） | その編集の未確定データのスタンプ（`LiveEdits.GetStamp`）の変化 |
 | マウスを離したとき（1 回） | コンポーネント（`Undo.RecordObject` → `SetFrom` → `SetDirty`） | 同上（下記 9.4.3） |
 
-`GatherEdits` は各 `MeshEdit` について「未確定データがあればそちらを優先」する。確定時に `LiveEdits.Clear()` するため、同じ結果へ滑らかに引き継がれる。
+`GatherEditsInto`（プレビューとビルドの共通の合成処理）は各 `MeshEdit` について「未確定データがあればそちらを優先」する。確定時に `LiveEdits.Clear()` するため、同じ結果へ滑らかに引き継がれる。
 
 #### 9.4.3 編集セッション中はコンポーネントを監視しない
 
@@ -589,10 +606,11 @@ foreach (var c in components) ObserveEdits(context, c);
 
 | | セッション中 | セッション外 |
 | --- | --- | --- |
-| 更新の合図 | `LiveEdits.Version`（`EditSession` から明示的に出す） | `EditsFingerprint` の変化 |
-| 更新の実体 | 生成済みメッシュへ `SetVertices`（`UpdateVertices`） | パイプライン再構築 |
+| 自分のノードの更新 | `OnFrame` の状態比較（→ 9.4.1a） | 同左 |
+| 下流ノードの更新 | 下流上書き時のみ `LiveEdits.SyncedVersion`（担当編集の比較値で絞る） | 担当編集の `EditSnapshot` の変化によるパイプライン再構築 |
+| 更新の実体 | 生成済みメッシュへ `SetVertices`（`UpdateVertices`） | 同左（ノードは `Refresh` で再利用される） |
 
-セッション中に「コンポーネントを書き換えたのにプレビューが追従しない」ことが無いよう、確定・Undo / Redo のどちらの経路も `LiveEdits.Clear()` + `Invalidate()`（`EditSession.ClearLiveEdits`）を通す。`GatherEdits` は未確定データが無ければコンポーネントを読むので、これだけで巻き戻った内容が反映される。
+自分のノードは状態比較で必ず追従するので、確定・Undo / Redo の経路に通知は不要になった。それでも `EditSession.ClearLiveEdits` が `Invalidate()` を呼ぶのは、下流フィルタに上書きされている構成で `SyncedVersion` を進め、下流ノードを作り直させるため。`GatherEditsInto` は未確定データが無ければコンポーネントを読むので、巻き戻った内容がそのまま反映される。
 
 セッションの開始・終了は `ActiveComponent`（`PublishedValue`）の変化として `GetTargetGroups` / `ObserveEdits` の両方が拾うため、**終了時には必ず通常の監視へ戻る**。同じ理由で `ShapeFingerprint` もセッション中は `HasEdits` を見ない — セッション中はデルタが空の対象もグループへ入れておりグループ分割に影響しない一方、「最初の 1 頂点を動かした瞬間」や「編集が空に戻る Undo」で全体が作り直されてしまうため。
 
@@ -746,7 +764,7 @@ Editor/
 | プレビュー対象の絞り込み | 編集セッション中はデルタが空の Renderer も対象に含め、それ以外は編集を持つ Renderer だけに絞る。セッションの開始・終了は `PublishedValue<DenMeshEditor>` で NDMF へ通知する |
 | 編集データの保持形式 | `byte[]` 1 本（16 バイト/頂点）+ `revision` カウンタ。ロード時間・Prefab オーバーライド件数・変更検出コストのすべてに効く（→ 8.1.1）。旧形式は初回アクセス時に自動移行 |
 | コンポーネント監視 | `context.Observe(component, extract, compare)` を使い、**グループに関係するコンポーネントだけ**を、**`revision` だけ**見て監視する。引数なしの `Observe(component)` は比較関数が常に false のため `brushRadius` を触っただけで全体が再構築される。また抽出関数は毎フレーム再評価されるので、監視範囲と抽出コストの両方を絞る必要がある（→ 9.4.1） |
-| 上流メッシュの変化検出 | `Mesh.GetVertices(List)` で読み直して 64 点のサンプルを比較する。上流がメッシュを in-place で書き換えるとインスタンス比較では検出できないため。ただし読み直しは全頂点コピーなので、`LiveEdits.Version` が動いていないときは 0.2 秒間隔まで落とす（→ 9.4.2） |
+| 上流メッシュの変化検出 | 0.2 秒ごとに頂点バッファを直接参照して 64 点を比較し、サンプルが変わったときと 2 秒ごとに全頂点を全件比較する。上流がメッシュを in-place で書き換えるとインスタンス比較では検出できないため。同じ上流メッシュの Renderer 同士で共有する（→ 9.4.2） |
 
 ### 設計からの差分
 

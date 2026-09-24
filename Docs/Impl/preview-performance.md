@@ -551,3 +551,30 @@ OnFrame(original, proxy):
 | 7 | 6 生成メッシュの共有 | 同じメッシュ・同じデルタの構成の改善 | 高 | 計測次第。既定では無効 |
 
 フェーズ 4 はフェーズ 5 の前提（`try/finally` による復元）を含むため、フェーズ 5 より先に行う。
+
+---
+
+# 実装状況（2026-09-25、ブランチ `feature/preview-performance`）
+
+| フェーズ | 状況 | 主な実装 |
+|---|---|---|
+| 0 計測基盤 | 実装済み | `PreviewDiagnostics.cs`（`PreviewMarkers` / `PreviewStats`）。`DEN_MESH_EDITOR_DEBUG` 定義時に `Tools/dennokoworks/Dennoko Mesh Editor/Debug/` の Log / Reset メニュー |
+| 1 状態比較 | 実装済み | `EditState.cs`、`LiveEdits.GetStamp`、`DenMeshEditorPreviewNode.TryRebuild`。生成メッシュが外部から破棄された場合も作り直す（`AppliedWithMesh`） |
+| 2 監視の絞り込み | 実装済み | `EditSnapshot`、`DenMeshEditorPreviewFilter.ObserveEdits`（`EditsTracker`）/ `ObserveDownstreamSync` |
+| 4 確保削減 | 実装済み | `GatherEditsInto` / `GatherResult`、辞書版 `UpdateVertices`、`VertexRestoreBuffer`。R17 用に `Compare Preview With Build Result` デバッグメニュー |
+| 3 軽量プローブ | 実装済み | `UpstreamVertices.cs`（64 点の直接参照 + 2 秒ごとの全件比較） |
+| 5 上流頂点の共有 | 実装済み | `UpstreamVertexCache.cs` |
+| 6 生成メッシュの共有 | **未着手（計画どおり保留）** | 着手条件（フェーズ 0〜5 後の計測で `Instantiate` とメッシュメモリが支配的）の確認待ち |
+
+## Unity 上で確認が必要なこと
+
+コードは Unity を起動せずに `dotnet build`（通常 / `DEN_MESH_EDITOR_DEBUG` の両構成）でコンパイルを確認しただけで、
+エディタ上での動作確認と計測はまだ行っていない。以下を実施する。
+
+- フェーズ 0 の計測：構成 (a)〜(e) × Renderer 数 1 / 10 / 50 で、待機中・ドラッグ中のフレーム時間と
+  各マーカー・カウンタを変更前（`b9ce75b`）と比較する
+- 回帰チェックリスト R1〜R17。特に R4（セッション外 Undo）、R10（サンプル点だけ / サンプル外の 1 頂点だけの
+  書き換え）、R11（AAO を下流に置いた構成）、R14（セッション中のドメインリロード）
+- R17：`DEN_MESH_EDITOR_DEBUG` を定義し、`Compare Preview With Build Result` で不一致 0 を確認する
+- `AcquireReadOnlyMeshData` が大きなメッシュでコピーを起こしていないか（`DenMeshEditor.ProbeUpstream` の時間）
+- フェーズ 6 の着手判断：上記計測で `DenMeshEditor.Instantiate` と生成メッシュのメモリが依然として支配的か

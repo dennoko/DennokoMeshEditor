@@ -48,6 +48,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
             /// <summary>最後にメッシュへ反映できたときの <see cref="UpstreamVertices.Generation"/>。</summary>
             public int AppliedUpstreamGeneration;
 
+            /// <summary>最後の反映で生成メッシュを持ったか。持っていたはずのメッシュが消えていたら作り直す。</summary>
+            public bool AppliedWithMesh;
+
             /// <summary>作り直しの失敗を 1 度だけ報告するためのフラグ。成功すると戻す。</summary>
             public bool LoggedFailure;
         }
@@ -126,20 +129,23 @@ namespace Dennokoworks.DenMeshEditor.Editor
             // 複数カメラで同じフレームに何度呼ばれても、2 回目以降は一致するので作り直さない
             EditState.Collect(_components, original, entry.Current, true);
 
+            var hasMesh = entry.Generated != null;
+
+            // 生成メッシュが外部から破棄されていた場合も、反映済みとはみなさずに作り直す
             var dirty = !entry.HasApplied
                         || entry.AppliedUpstreamGeneration != entry.Upstream.Generation
+                        || entry.AppliedWithMesh != hasMesh
                         || !EditState.SequenceEqual(entry.Applied, entry.Current);
 
-            if (dirty) TryRebuild(entry, original);
+            if (dirty && TryRebuild(entry, original)) hasMesh = entry.Generated != null;
 
-            if (entry.Generated != null) MeshDeltaApplier.SetSharedMesh(proxy, entry.Generated);
+            if (hasMesh) MeshDeltaApplier.SetSharedMesh(proxy, entry.Generated);
 
             // 描画後に読み戻して、下流フィルタの上書きを検出させる。
             // 編集が無くて何も代入していない場合は上流メッシュを申告する。こうしておくと
             // 「編集を 1 つも持たない状態」でも併用構成を検出できる
-            DownstreamGuard.Expect(this, original, proxy, entry.Generated != null ? entry.Generated : entry.Source);
+            DownstreamGuard.Expect(this, original, proxy, hasMesh ? entry.Generated : entry.Source);
         }
-
 
         /// <summary>
         /// 作り直しを試み、成功したときだけ「反映済み」の状態を進める。
@@ -148,7 +154,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
         /// 例外はここで止める。NDMF の <c>NodeController.OnFrame</c> は例外を捕まえないため、
         /// 素通しすると同じフレームの他ノードの処理（<c>ProxyPipeline.OnFrame</c> のループ）まで止まる。
         /// </summary>
-        private void TryRebuild(Entry entry, Renderer original)
+        /// <returns>反映できたか。</returns>
+        private bool TryRebuild(Entry entry, Renderer original)
         {
             // 反映に使う上流の世代は、作り直しの前に控える
             var upstreamGeneration = entry.Upstream.Generation;
@@ -169,17 +176,19 @@ namespace Dennokoworks.DenMeshEditor.Editor
                         original);
                 }
 
-                return;
+                return false;
             }
 
-            if (!applied) return;
+            if (!applied) return false;
 
             entry.LoggedFailure = false;
             entry.HasApplied = true;
             entry.AppliedUpstreamGeneration = upstreamGeneration;
+            entry.AppliedWithMesh = entry.Generated != null;
 
             // 反映した状態を控える。確保しないよう 2 本のリストを入れ替えて使い回す
             (entry.Applied, entry.Current) = (entry.Current, entry.Applied);
+            return true;
         }
 
         /// <summary>
@@ -371,7 +380,10 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
                     EditState.Collect(node._components, entry.Original, states, true);
 
-                    var pending = !entry.HasApplied || !EditState.SequenceEqual(entry.Applied, states);
+                    var pending = !entry.HasApplied
+                                  || entry.Upstream == null
+                                  || entry.AppliedUpstreamGeneration != entry.Upstream.Generation
+                                  || !EditState.SequenceEqual(entry.Applied, states);
                     var hasLive = false;
                     foreach (var state in states)
                     {
