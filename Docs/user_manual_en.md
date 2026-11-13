@@ -130,6 +130,28 @@ Edits made very close to the center axis do not trigger mirror reflection (to av
 
 ---
 
+## UV Masking
+
+You can restrict vertex movement per mesh using a UV channel and a mask texture. This is useful for locking areas you do not want to move, such as necklines or cuffs.
+
+### How to Configure
+
+1. In the Inspector under **Targets**, expand **Advanced Options** below the target mesh.
+2. Select the **UV Channel** (`UV0` – `UV7`).
+3. Assign a **Mask Texture** (`Texture2D`).
+
+### Behavior
+
+- **White areas**: Move normally at full strength (multiplier `1.0`).
+- **Black areas**: Do not move (multiplier `0.0`).
+- **Gray areas**: Movement is multiplied by the grayscale brightness (`0.0` – `1.0`).
+- **Vertices on UV seams**: For vertices sharing the same 3D position across multiple UVs, the darkest color (lowest multiplier) is applied so the mesh does not tear along seams.
+- **When applied**: The mask multiplies vertex movement during editing in the Scene View. Changing or removing the mask affects subsequent drags while preserving already-sculpted edits.
+- Textures with `Read/Write Enabled` disabled are also supported.
+- If the mesh does not have the selected UV channel, a warning is shown and the mask is not applied.
+
+---
+
 ## Baking
 
 You can export a mesh with the edits baked directly into a new asset file.
@@ -158,6 +180,7 @@ If you want to use the baked mesh, assign it manually to the Renderer (the baked
 
 - Vertex translation (proportional editing)
 - Mirror editing along arbitrary axes (X, Y, Z)
+- Per-mesh UV mask to restrict vertex movement
 - Multi-mesh concurrent editing
 - Real-time reflection in NDMF Preview
 - Mesh and BlendShape baking
