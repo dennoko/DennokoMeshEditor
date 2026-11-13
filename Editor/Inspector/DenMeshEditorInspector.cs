@@ -17,6 +17,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private SerializedProperty _bakeAsBlendShape;
         private SerializedProperty _blendShapeName;
 
+        private bool _brushFoldout;
+        private bool _bakeFoldout;
+
         // バージョン表記 + 更新チェックの結果。State は保持せず表示のたびに
         // 「現在のローカル版 vs 取得済みの最新版」で再計算した値を受け取る。
         private DennokoVersionChecker.Result _versionResult;
@@ -715,7 +718,13 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
         private void DrawBrushSettings()
         {
-            EditorGUILayout.LabelField(DenMeshEditorLocalization.Tr("inspector.brush_header"), EditorStyles.boldLabel);
+            _brushFoldout = EditorGUILayout.Foldout(
+                _brushFoldout,
+                DenMeshEditorLocalization.Tr("inspector.brush_header"),
+                true,
+                EditorStyles.foldoutHeader);
+            if (!_brushFoldout) return;
+
             EditorGUILayout.Slider(_brushRadius, EditSession.MinBrushRadius, EditSession.MaxBrushRadius,
                 new GUIContent(DenMeshEditorLocalization.Tr("inspector.brush_radius"), DenMeshEditorLocalization.Tr("inspector.brush_radius_tooltip")));
             EditorGUILayout.PropertyField(_falloff, new GUIContent(DenMeshEditorLocalization.Tr("inspector.brush_falloff")));
@@ -792,7 +801,12 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
         private void DrawBakeSection(DenMeshEditor component)
         {
-            EditorGUILayout.LabelField(DenMeshEditorLocalization.Tr("inspector.bake_header"), EditorStyles.boldLabel);
+            _bakeFoldout = EditorGUILayout.Foldout(
+                _bakeFoldout,
+                DenMeshEditorLocalization.Tr("inspector.bake_header"),
+                true,
+                EditorStyles.foldoutHeader);
+            if (!_bakeFoldout) return;
 
             EditorGUILayout.PropertyField(_bakeAsBlendShape,
                 new GUIContent(DenMeshEditorLocalization.Tr("inspector.bake_as_blendshape"), DenMeshEditorLocalization.Tr("inspector.bake_as_blendshape_tooltip")));
