@@ -62,7 +62,7 @@ Click the **"Edit"** button in the Inspector to enter Edit Mode in the Scene Vie
 | `Esc` | Deselect current vertex. Press again to finish editing |
 | Select another object | Finishes editing |
 
-You can also adjust the radius, falloff type, and mirror settings directly in the on-screen overlay in the Scene View.
+You can also adjust the radius, falloff type, connected-only mode, and mirror settings directly in the on-screen overlay in the Scene View.
 
 ### About Vertex Selection
 
@@ -116,6 +116,15 @@ Controls how displacement smoothly decreases away from the center.
 | Linear | Constant linear falloff rate. |
 | Sharp | Concentrated strong movement near center. |
 | Constant | Uniform displacement throughout the radius (no falloff). |
+
+### Connected Only
+
+When enabled, only moves the mesh island (connected component) linked to the selected vertex.
+
+- Vertices split by hard edges or UV seams are welded by bind-pose position, so connected parts move together without tearing along seams.
+- Even when multiple meshes are registered as targets, unrelated meshes and separate islands remain unaffected.
+- When Mirror Editing is enabled, the closest island on the mirrored side also moves symmetrically (supporting separate left/right parts such as sleeves or twin-tails).
+- You can also toggle Connected Only directly from the on-screen overlay in the Scene View.
 
 ---
 
