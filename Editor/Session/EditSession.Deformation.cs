@@ -116,6 +116,43 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 Reflect(centerInRoot, _component.mirrorAxis));
         }
 
+        private static float[] GetOrBuildMaskWeights(TargetState target)
+        {
+            var edit = target.Edit;
+            var mesh = target.Mesh;
+            var tex = edit?.maskTexture;
+            var uvChannel = edit != null ? edit.uvChannel : 0;
+
+            if (edit == null || tex == null || mesh == null)
+            {
+                target.MaskWeights = null;
+                target.MaskCachedMesh = mesh;
+                target.MaskCachedUvChannel = uvChannel;
+                target.MaskCachedTexture = null;
+                target.MaskCachedTextureHash = default;
+                target.MaskDirty = false;
+                return null;
+            }
+
+            var texHash = tex.imageContentsHash;
+            if (!target.MaskDirty
+                && target.MaskCachedMesh == mesh
+                && target.MaskCachedUvChannel == uvChannel
+                && target.MaskCachedTexture == tex
+                && target.MaskCachedTextureHash == texHash)
+            {
+                return target.MaskWeights;
+            }
+
+            target.MaskWeights = UvMaskUtil.BuildMaskWeights(mesh, uvChannel, tex);
+            target.MaskCachedMesh = mesh;
+            target.MaskCachedUvChannel = uvChannel;
+            target.MaskCachedTexture = tex;
+            target.MaskCachedTextureHash = texHash;
+            target.MaskDirty = false;
+            return target.MaskWeights;
+        }
+
         private void BuildInfluences()
         {
             _influences.Clear();
@@ -130,8 +167,14 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 var vertices = target.WorldVertices;
                 if (vertices == null) continue;
 
+                var maskWeights = GetOrBuildMaskWeights(target);
+                var hasMask = maskWeights != null && maskWeights.Length == vertices.Length;
+
                 for (var i = 0; i < vertices.Length; i++)
                 {
+                    var mask = hasMask ? maskWeights[i] : 1f;
+                    if (mask <= 0f) continue;
+
                     var world = vertices[i];
 
                     // 影響圏の外がほとんどなので、まず二乗距離で弾く。
@@ -153,6 +196,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
                         }
                     }
 
+                    weight *= mask;
+                    mirrorWeight *= mask;
                     if (weight <= 0f && mirrorWeight <= 0f) continue;
 
                     _influences.Add(new Influence

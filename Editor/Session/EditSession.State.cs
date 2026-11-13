@@ -65,6 +65,13 @@ namespace Dennokoworks.DenMeshEditor.Editor
             public readonly Dictionary<int, Vector3> Working = new Dictionary<int, Vector3>();
             public readonly Dictionary<int, Vector3> Snapshot = new Dictionary<int, Vector3>();
             public bool Touched;
+
+            public float[] MaskWeights;
+            public Mesh MaskCachedMesh;
+            public int MaskCachedUvChannel;
+            public Texture2D MaskCachedTexture;
+            public Hash128 MaskCachedTextureHash;
+            public bool MaskDirty = true;
         }
 
         private struct Influence

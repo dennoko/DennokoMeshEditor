@@ -209,6 +209,11 @@ namespace Dennokoworks.DenMeshEditor.Editor
         {
             if (_active == null) return;
 
+            foreach (var target in _active._targets)
+            {
+                target.MaskDirty = true;
+            }
+
             if (_active._hasSelection)
             {
                 _active.RecomputeMirrorCenter();

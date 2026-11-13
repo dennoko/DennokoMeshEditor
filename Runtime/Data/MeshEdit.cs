@@ -42,6 +42,12 @@ namespace Dennokoworks.DenMeshEditor
         [Tooltip("編集時点の頂点数。適用前の整合性チェックに使用します。")]
         public int vertexCount;
 
+        [Tooltip("マスク画像のサンプリングに使用する UV チャンネル。")]
+        public int uvChannel;
+
+        [Tooltip("頂点の移動量を制限するマスク画像（白: そのまま移動 / 黒: 移動なし）。")]
+        public Texture2D maskTexture;
+
         [SerializeField, HideInInspector] private int count;
         [SerializeField, HideInInspector] private byte[] blob;
 

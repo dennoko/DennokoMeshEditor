@@ -71,6 +71,36 @@
       "en": "Vertex count differs from when edited (Current: {0} / Edited: {1}). Edits will not be applied. The original mesh may have been replaced or re-imported."
     },
     {
+      "key": "inspector.advanced_options",
+      "ja": "詳細オプション",
+      "en": "Advanced Options"
+    },
+    {
+      "key": "inspector.uv_channel",
+      "ja": "UV チャンネル",
+      "en": "UV Channel"
+    },
+    {
+      "key": "inspector.uv_channel_tooltip",
+      "ja": "マスク画像のサンプリングに使用する UV チャンネルを指定します。",
+      "en": "Select the UV channel used to sample the mask texture."
+    },
+    {
+      "key": "inspector.mask_texture",
+      "ja": "マスク画像",
+      "en": "Mask Texture"
+    },
+    {
+      "key": "inspector.mask_texture_tooltip",
+      "ja": "頂点の移動量を制限するマスク画像を指定します（白: そのまま移動 / 黒: 移動なし）。",
+      "en": "Texture used to mask vertex movement (White: full movement / Black: no movement)."
+    },
+    {
+      "key": "inspector.warn_missing_uv",
+      "ja": "このメッシュには UV{0} が存在しないため、マスクは適用されません。",
+      "en": "This mesh does not have UV{0}, so the mask will not be applied."
+    },
+    {
       "key": "inspector.btn_edit_end",
       "ja": "編集終了",
       "en": "Finish Editing"

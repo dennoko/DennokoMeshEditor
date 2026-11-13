@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
 
 namespace Dennokoworks.DenMeshEditor.Editor
@@ -402,6 +403,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
                 var targetProp = element.FindPropertyRelative("target");
                 var countProp = element.FindPropertyRelative("count");
                 var vertexCountProp = element.FindPropertyRelative("vertexCount");
+                var uvChannelProp = element.FindPropertyRelative("uvChannel");
+                var maskTextureProp = element.FindPropertyRelative("maskTexture");
 
                 EditorGUILayout.BeginHorizontal();
                 EditorGUILayout.PropertyField(targetProp, GUIContent.none);
@@ -415,6 +418,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
                 EditorGUILayout.EndHorizontal();
 
+                DrawTargetAdvancedOptions(element, targetProp, uvChannelProp, maskTextureProp);
                 DrawTargetWarning(targetProp, vertexCountProp);
             }
 
@@ -556,6 +560,85 @@ namespace Dennokoworks.DenMeshEditor.Editor
             }
 
             serializedObject.Update();
+        }
+
+        private static readonly GUIContent[] UvChannelOptions =
+        {
+            new GUIContent("UV0"),
+            new GUIContent("UV1"),
+            new GUIContent("UV2"),
+            new GUIContent("UV3"),
+            new GUIContent("UV4"),
+            new GUIContent("UV5"),
+            new GUIContent("UV6"),
+            new GUIContent("UV7"),
+        };
+
+        private static readonly int[] UvChannelValues = { 0, 1, 2, 3, 4, 5, 6, 7 };
+
+        private static void DrawTargetAdvancedOptions(
+            SerializedProperty element,
+            SerializedProperty targetProp,
+            SerializedProperty uvChannelProp,
+            SerializedProperty maskTextureProp)
+        {
+            using (new EditorGUI.IndentLevelScope())
+            {
+                element.isExpanded = EditorGUILayout.Foldout(
+                    element.isExpanded,
+                    DenMeshEditorLocalization.Tr("inspector.advanced_options"),
+                    true);
+
+                if (!element.isExpanded) return;
+
+                using (new EditorGUI.IndentLevelScope())
+                {
+                    DrawUvChannelField(uvChannelProp);
+                    EditorGUILayout.PropertyField(
+                        maskTextureProp,
+                        new GUIContent(
+                            DenMeshEditorLocalization.Tr("inspector.mask_texture"),
+                            DenMeshEditorLocalization.Tr("inspector.mask_texture_tooltip")));
+                    DrawMaskWarning(targetProp, uvChannelProp, maskTextureProp);
+                }
+            }
+        }
+
+        private static void DrawUvChannelField(SerializedProperty uvChannelProp)
+        {
+            var label = new GUIContent(
+                DenMeshEditorLocalization.Tr("inspector.uv_channel"),
+                DenMeshEditorLocalization.Tr("inspector.uv_channel_tooltip"));
+            var rect = EditorGUILayout.GetControlRect();
+            EditorGUI.BeginProperty(rect, label, uvChannelProp);
+            EditorGUI.BeginChangeCheck();
+            var next = EditorGUI.IntPopup(rect, label, uvChannelProp.intValue, UvChannelOptions, UvChannelValues);
+            if (EditorGUI.EndChangeCheck())
+            {
+                uvChannelProp.intValue = next;
+            }
+            EditorGUI.EndProperty();
+        }
+
+        private static void DrawMaskWarning(
+            SerializedProperty targetProp,
+            SerializedProperty uvChannelProp,
+            SerializedProperty maskTextureProp)
+        {
+            if (maskTextureProp.objectReferenceValue == null) return;
+
+            var renderer = targetProp.objectReferenceValue as Renderer;
+            var mesh = MeshDeltaApplier.GetSharedMesh(renderer);
+            if (mesh == null) return;
+
+            var uvChannel = uvChannelProp.intValue;
+            if (uvChannel < 0 || uvChannel > UvMaskUtil.MaxUvChannel ||
+                !mesh.HasVertexAttribute(VertexAttribute.TexCoord0 + uvChannel))
+            {
+                EditorGUILayout.HelpBox(
+                    DenMeshEditorLocalization.Format("inspector.warn_missing_uv", uvChannel),
+                    MessageType.Warning);
+            }
         }
 
         private static void DrawTargetWarning(SerializedProperty targetProp, SerializedProperty vertexCountProp)
