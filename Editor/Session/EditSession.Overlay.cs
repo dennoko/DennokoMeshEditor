@@ -23,7 +23,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             }
 
             var current = Event.current;
-            var overlayHeight = _overlayShowsWarning ? 230f : 190f;
+            var overlayHeight = _overlayShowsWarning ? 262f : 222f;
             var overlayWidth = 330f;
             const float margin = 10f;
 
@@ -141,8 +141,36 @@ namespace Dennokoworks.DenMeshEditor.Editor
 
             GUILayout.Space(3);
 
-            var mirrorActive = _component.mirror;
             var prevColor = GUI.backgroundColor;
+
+            var connectedOnly = _component.connectedOnly;
+            if (connectedOnly)
+            {
+                GUI.backgroundColor = new Color(0.35f, 0.95f, 0.45f);
+            }
+
+            var connectedText = connectedOnly
+                ? DenMeshEditorLocalization.Tr("overlay.connected_on")
+                : DenMeshEditorLocalization.Tr("overlay.connected_off");
+            if (GUILayout.Button(connectedText, GUILayout.Height(28)))
+            {
+                DenMeshEditorUndo.BeginGroup(_component, "Dennoko Mesh Editor Connected Only Toggle");
+                _component.connectedOnly = !connectedOnly;
+                DenMeshEditorUndo.Apply(_component);
+                DenMeshEditorUndo.EndGroup();
+
+                if (_hasSelection)
+                {
+                    BuildInfluences();
+                }
+
+                SceneView.RepaintAll();
+            }
+
+            GUI.backgroundColor = prevColor;
+            GUILayout.Space(2);
+
+            var mirrorActive = _component.mirror;
             if (mirrorActive)
             {
                 GUI.backgroundColor = new Color(0.35f, 0.95f, 0.45f);

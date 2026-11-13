@@ -26,6 +26,9 @@ namespace Dennokoworks.DenMeshEditor
 
         public FalloffType falloff = FalloffType.Smooth;
 
+        [Tooltip("ON にすると、選択した頂点とつながっているメッシュの塊（連結成分）だけを動かします。")]
+        public bool connectedOnly;
+
         [Header("ミラー")]
         [Tooltip("有効な間に行った操作のみがミラーされます。")]
         public bool mirror;

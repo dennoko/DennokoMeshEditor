@@ -12,6 +12,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
         private SerializedProperty _edits;
         private SerializedProperty _brushRadius;
         private SerializedProperty _falloff;
+        private SerializedProperty _connectedOnly;
         private SerializedProperty _mirror;
         private SerializedProperty _mirrorAxis;
         private SerializedProperty _bakeAsBlendShape;
@@ -248,6 +249,7 @@ namespace Dennokoworks.DenMeshEditor.Editor
             _edits = serializedObject.FindProperty("edits");
             _brushRadius = serializedObject.FindProperty("brushRadius");
             _falloff = serializedObject.FindProperty("falloff");
+            _connectedOnly = serializedObject.FindProperty("connectedOnly");
             _mirror = serializedObject.FindProperty("mirror");
             _mirrorAxis = serializedObject.FindProperty("mirrorAxis");
             _bakeAsBlendShape = serializedObject.FindProperty("bakeAsBlendShape");
@@ -728,6 +730,8 @@ namespace Dennokoworks.DenMeshEditor.Editor
             EditorGUILayout.Slider(_brushRadius, EditSession.MinBrushRadius, EditSession.MaxBrushRadius,
                 new GUIContent(DenMeshEditorLocalization.Tr("inspector.brush_radius"), DenMeshEditorLocalization.Tr("inspector.brush_radius_tooltip")));
             EditorGUILayout.PropertyField(_falloff, new GUIContent(DenMeshEditorLocalization.Tr("inspector.brush_falloff")));
+            EditorGUILayout.PropertyField(_connectedOnly,
+                new GUIContent(DenMeshEditorLocalization.Tr("inspector.connected_only"), DenMeshEditorLocalization.Tr("inspector.connected_only_tooltip")));
 
             EditorGUILayout.Space(2);
 

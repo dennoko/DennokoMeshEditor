@@ -146,6 +146,16 @@
       "en": "Falloff"
     },
     {
+      "key": "inspector.connected_only",
+      "ja": "接続のみ",
+      "en": "Connected Only"
+    },
+    {
+      "key": "inspector.connected_only_tooltip",
+      "ja": "ON にすると、選択した頂点とつながっているメッシュの塊（連結成分）だけを動かします（ハードエッジ・UV シームも連続として扱います）",
+      "en": "When enabled, only moves the mesh island connected to the selected vertex (treats hard edges and UV seams as connected)"
+    },
+    {
       "key": "inspector.mirror_on",
       "ja": "ミラー: 有効 (ON)",
       "en": "Mirror: Enabled (ON)"
@@ -269,6 +279,16 @@
       "key": "overlay.falloff",
       "ja": "減衰",
       "en": "Falloff"
+    },
+    {
+      "key": "overlay.connected_on",
+      "ja": "接続のみ: 有効 (ON)",
+      "en": "Connected Only: Enabled (ON)"
+    },
+    {
+      "key": "overlay.connected_off",
+      "ja": "接続のみ: 無効 (OFF)",
+      "en": "Connected Only: Disabled (OFF)"
     },
     {
       "key": "overlay.mirror_on",

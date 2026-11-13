@@ -153,6 +153,58 @@ namespace Dennokoworks.DenMeshEditor.Editor
             return target.MaskWeights;
         }
 
+        private static int[] GetOrBuildComponentIds(TargetState target)
+        {
+            var mesh = target.Mesh;
+            if (mesh == null)
+            {
+                target.ComponentIds = null;
+                target.ComponentCachedMesh = null;
+                return null;
+            }
+
+            if (target.ComponentIds != null
+                && target.ComponentCachedMesh == mesh
+                && target.ComponentIds.Length == target.VertexCount)
+            {
+                return target.ComponentIds;
+            }
+
+            target.ComponentIds = MeshConnectivityUtil.BuildComponentIds(mesh);
+            target.ComponentCachedMesh = mesh;
+            return target.ComponentIds;
+        }
+
+        private static bool TryFindMirrorComponentId(
+            Vector3[] vertices,
+            int[] componentIds,
+            Vector3 mirrorCenterWorld,
+            float radiusSq,
+            out int mirrorComponentId)
+        {
+            var bestDistSq = radiusSq;
+            var bestIndex = -1;
+
+            for (var i = 0; i < vertices.Length; i++)
+            {
+                var dSq = (vertices[i] - mirrorCenterWorld).sqrMagnitude;
+                if (dSq < bestDistSq)
+                {
+                    bestDistSq = dSq;
+                    bestIndex = i;
+                }
+            }
+
+            if (bestIndex < 0)
+            {
+                mirrorComponentId = 0;
+                return false;
+            }
+
+            mirrorComponentId = componentIds[bestIndex];
+            return true;
+        }
+
         private void BuildInfluences()
         {
             _influences.Clear();
@@ -161,14 +213,38 @@ namespace Dennokoworks.DenMeshEditor.Editor
             var radiusSq = radius * radius;
             var inverseRadius = 1f / radius;
             var falloff = _component.falloff;
+            var connectedOnly = _component.connectedOnly;
 
             foreach (var target in _targets)
             {
+                if (connectedOnly && target != _selectedTarget) continue;
+
                 var vertices = target.WorldVertices;
                 if (vertices == null) continue;
 
                 var maskWeights = GetOrBuildMaskWeights(target);
                 var hasMask = maskWeights != null && maskWeights.Length == vertices.Length;
+
+                var filterByComponent = false;
+                var selectedComponentId = 0;
+                var hasMirrorComponent = false;
+                var mirrorComponentId = 0;
+                int[] componentIds = null;
+
+                if (connectedOnly && _selectedIndex >= 0 && _selectedIndex < vertices.Length)
+                {
+                    componentIds = GetOrBuildComponentIds(target);
+                    if (componentIds != null && componentIds.Length == vertices.Length)
+                    {
+                        filterByComponent = true;
+                        selectedComponentId = componentIds[_selectedIndex];
+                        if (_mirrorActive)
+                        {
+                            hasMirrorComponent = TryFindMirrorComponentId(
+                                vertices, componentIds, _mirrorCenterWorld, radiusSq, out mirrorComponentId);
+                        }
+                    }
+                }
 
                 for (var i = 0; i < vertices.Length; i++)
                 {
@@ -180,14 +256,17 @@ namespace Dennokoworks.DenMeshEditor.Editor
                     // 影響圏の外がほとんどなので、まず二乗距離で弾く。
                     // 平方根は圏内の頂点にだけ計算する
                     var weight = 0f;
-                    var distanceSq = (world - _centerWorld).sqrMagnitude;
-                    if (distanceSq < radiusSq)
+                    if (!filterByComponent || componentIds[i] == selectedComponentId)
                     {
-                        weight = FalloffUtil.Weight(Mathf.Sqrt(distanceSq) * inverseRadius, falloff);
+                        var distanceSq = (world - _centerWorld).sqrMagnitude;
+                        if (distanceSq < radiusSq)
+                        {
+                            weight = FalloffUtil.Weight(Mathf.Sqrt(distanceSq) * inverseRadius, falloff);
+                        }
                     }
 
                     var mirrorWeight = 0f;
-                    if (_mirrorActive)
+                    if (_mirrorActive && (!filterByComponent || (hasMirrorComponent && componentIds[i] == mirrorComponentId)))
                     {
                         var mirrorDistanceSq = (world - _mirrorCenterWorld).sqrMagnitude;
                         if (mirrorDistanceSq < radiusSq)

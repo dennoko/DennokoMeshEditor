@@ -72,6 +72,9 @@ namespace Dennokoworks.DenMeshEditor.Editor
             public Texture2D MaskCachedTexture;
             public Hash128 MaskCachedTextureHash;
             public bool MaskDirty = true;
+
+            public int[] ComponentIds;
+            public Mesh ComponentCachedMesh;
         }
 
         private struct Influence
